@@ -9,13 +9,13 @@
 
 # Baseline: 8 concurrent DQN runs on Alien (Atari 100K), one CPU core each, sharing the single GPU
 
-SB3_DIR=/home/dsi/fiskustal/talfiskus/stable-baselines3
+SB3_DIR=/home/dsi/fiskustal/talfiskus/stable-baselines3-new/stable-baseline3
 PYTHON=~/miniconda3/envs/stable-baselines3/bin/python
-RESULTS_DIR=$SB3_DIR/stable_baselines3/atari100k_results
 
 DEVICE="cuda:0"
 TF_LAMBDA=0
 AGENT_NAME="DQN"
+RESULTS_DIR=$SB3_DIR/results/$AGENT_NAME
 TIMESTEPS=100000
 GYM_ENV_NAME="ALE/Alien-v5"
 BUFFER_SIZE=100000
@@ -25,6 +25,8 @@ export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export PYTHONUNBUFFERED=1
+# Import stable_baselines3 from this repo (atari100k.py appends the old repo to sys.path)
+export PYTHONPATH="$SB3_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
 mkdir -p "$RESULTS_DIR"
 cd "$SB3_DIR/stable_baselines3" || exit 1
