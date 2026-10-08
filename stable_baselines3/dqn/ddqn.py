@@ -134,7 +134,9 @@ class DDQN(OffPolicyAlgorithm):
             support_multi_env=True,
             is_dqn=True,
         )
-
+        print("Loss", "MSE")
+        print("buffer size", buffer_size)
+        print("TF lambda", tf_lambda)
         self.exploration_initial_eps = exploration_initial_eps
         self.exploration_final_eps = exploration_final_eps
         self.exploration_fraction = exploration_fraction
@@ -144,8 +146,7 @@ class DDQN(OffPolicyAlgorithm):
         self.max_grad_norm = max_grad_norm
         # "epsilon" for the epsilon-greedy exploration
         self.exploration_rate = 0.0
-        self.tf_lambda = tf_lambda  # SUFT CHANGE
-
+        self.tf_lambda = tf_lambda
         if _init_setup_model:
             self._setup_model()
 
@@ -204,29 +205,27 @@ class DDQN(OffPolicyAlgorithm):
             discounts = replay_data.discounts if replay_data.discounts is not None else self.gamma
 
             with th.no_grad():
+                # compute the action from the current network
+                next_q_values_current_net = self.q_net(replay_data.next_observations)
+                next_action = next_q_values_current_net.argmax(dim=1).unsqueeze(1).long()
                 # Compute the next Q-values using the target network
-                next_q_values = self.q_net_target(replay_data.next_observations)
+                next_q_values_target = self.q_net_target(replay_data.next_observations)
                 # Follow greedy policy: use the one with the highest value
-                next_q_values, _ = next_q_values.max(dim=1)
+                next_q_values_target = th.gather(next_q_values_target, dim=1, index=next_action)
                 # Avoid potential broadcast issue
-                next_q_values = next_q_values.reshape(-1, 1)
+                next_q_values_target = next_q_values_target.reshape(-1, 1)
                 # 1-step TD target
-                target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
+                target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values_target
 
             # Get current Q-values estimates
             current_q_values = self.q_net(replay_data.observations)
-
             # Retrieve the q-values for the actions from the replay buffer
             current_q_values = th.gather(current_q_values, dim=1, index=replay_data.actions.long())
-
-            # Compute MSE loss (less sensitive to outliers)
-            # SUFT CHANGE
             loss = F.mse_loss(current_q_values, target_q_values)
-            # SUFT OPE term
+            # Psi
             old_q_values = th.gather(replay_data.old_values, dim=1, index=replay_data.actions.long())
             suft_ope_term = F.mse_loss(current_q_values, old_q_values) * self.tf_lambda
             loss = loss + suft_ope_term
-            # SUFT CHANGE until here
             losses.append(loss.item())
 
             # Optimize the policy
