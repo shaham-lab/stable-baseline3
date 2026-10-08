@@ -1,4 +1,4 @@
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar, Optional, TypeVar, Union
 
 import numpy as np
 import torch as th
@@ -93,33 +93,33 @@ class SAC(OffPolicyAlgorithm):
 
     def __init__(
         self,
-        policy: str | type[SACPolicy],
-        env: GymEnv | str,
-        learning_rate: float | Schedule = 3e-4,
+        policy: Union[str, type[SACPolicy]],
+        env: Union[GymEnv, str],
+        learning_rate: Union[float, Schedule] = 3e-4,
         buffer_size: int = 1_000_000,  # 1e6
         learning_starts: int = 100,
         batch_size: int = 256,
         tau: float = 0.005,
         gamma: float = 0.99,
-        train_freq: int | tuple[int, str] = 1,
+        train_freq: Union[int, tuple[int, str]] = 1,
         gradient_steps: int = 1,
-        action_noise: ActionNoise | None = None,
-        replay_buffer_class: type[ReplayBuffer] | None = None,
-        replay_buffer_kwargs: dict[str, Any] | None = None,
+        action_noise: Optional[ActionNoise] = None,
+        replay_buffer_class: Optional[type[ReplayBuffer]] = None,
+        replay_buffer_kwargs: Optional[dict[str, Any]] = None,
         optimize_memory_usage: bool = False,
         n_steps: int = 1,
-        ent_coef: str | float = "auto",
+        ent_coef: Union[str, float] = "auto",
         target_update_interval: int = 1,
-        target_entropy: str | float = "auto",
+        target_entropy: Union[str, float] = "auto",
         use_sde: bool = False,
         sde_sample_freq: int = -1,
         use_sde_at_warmup: bool = False,
         stats_window_size: int = 100,
-        tensorboard_log: str | None = None,
-        policy_kwargs: dict[str, Any] | None = None,
+        tensorboard_log: Optional[str] = None,
+        policy_kwargs: Optional[dict[str, Any]] = None,
         verbose: int = 0,
-        seed: int | None = None,
-        device: th.device | str = "auto",
+        seed: Optional[int] = None,
+        device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
     ):
         super().__init__(
@@ -201,6 +201,13 @@ class SAC(OffPolicyAlgorithm):
         self.actor = self.policy.actor
         self.critic = self.policy.critic
         self.critic_target = self.policy.critic_target
+
+    @staticmethod
+    def _concat_replay_samples(first: ReplayBufferSamples, second: ReplayBufferSamples) -> ReplayBufferSamples:
+        """
+        Concatenate two batches of replay samples along the batch dimension.
+        """
+        return ReplayBufferSamples(*[None if a is None else th.cat([a, b], dim=0) for a, b in zip(first, second)])
 
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
         # Switch to train mode (this affects batch norm / dropout)

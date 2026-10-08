@@ -7,7 +7,7 @@ import warnings
 from abc import ABC, abstractmethod
 from collections import deque
 from collections.abc import Iterable
-from typing import Any, ClassVar, TypeVar
+from typing import Any, ClassVar, Optional, TypeVar, Union
 
 import gymnasium as gym
 import numpy as np
@@ -45,7 +45,7 @@ from stable_baselines3.common.vec_env.patch_gym import _convert_space, _patch_en
 SelfBaseAlgorithm = TypeVar("SelfBaseAlgorithm", bound="BaseAlgorithm")
 
 
-def maybe_make_env(env: GymEnv | str, verbose: int) -> GymEnv:
+def maybe_make_env(env: Union[GymEnv, str], verbose: int) -> GymEnv:
     """If env is a string, make the environment; otherwise, return env.
 
     :param env: The environment to learn from.
@@ -105,20 +105,21 @@ class BaseAlgorithm(ABC):
 
     def __init__(
         self,
-        policy: str | type[BasePolicy],
-        env: GymEnv | str | None,
-        learning_rate: float | Schedule,
-        policy_kwargs: dict[str, Any] | None = None,
+        policy: Union[str, type[BasePolicy]],
+        env: Optional[Union[GymEnv, str]],
+        learning_rate: Union[float, Schedule],
+        policy_kwargs: Optional[dict[str, Any]] = None,
         stats_window_size: int = 100,
-        tensorboard_log: str | None = None,
+        tensorboard_log: Optional[str] = None,
+        tensor_board_logger_name: Optional[str] = None,
         verbose: int = 0,
-        device: th.device | str = "auto",
+        device: Union[th.device, str] = "auto",
         support_multi_env: bool = False,
         monitor_wrapper: bool = True,
-        seed: int | None = None,
+        seed: Optional[int] = None,
         use_sde: bool = False,
         sde_sample_freq: int = -1,
-        supported_action_spaces: tuple[type[spaces.Space], ...] | None = None,
+        supported_action_spaces: Optional[tuple[type[spaces.Space], ...]] = None,
     ) -> None:
         if isinstance(policy, str):
             self.policy_class = self._get_policy_from_name(policy)
@@ -138,7 +139,7 @@ class BaseAlgorithm(ABC):
         # Used for computing fps, it is updated at each call of learn()
         self._num_timesteps_at_start = 0
         self.seed = seed
-        self.action_noise: ActionNoise | None = None
+        self.action_noise: Optional[ActionNoise] = None
         self.start_time = 0.0
         self.learning_rate = learning_rate
         self.tensorboard_log = tensorboard_log
@@ -161,8 +162,8 @@ class BaseAlgorithm(ABC):
         self._n_updates = 0  # type: int
         # Whether the user passed a custom logger or not
         self._custom_logger = False
-        self.env: VecEnv | None = None
-        self._vec_normalize_env: VecNormalize | None = None
+        self.env: Optional[VecEnv] = None
+        self._vec_normalize_env: Optional[VecNormalize] = None
 
         # Create and wrap the env if needed
         if env is not None:
@@ -284,7 +285,7 @@ class BaseAlgorithm(ABC):
         """
         self._current_progress_remaining = 1.0 - float(num_timesteps) / float(total_timesteps)
 
-    def _update_learning_rate(self, optimizers: list[th.optim.Optimizer] | th.optim.Optimizer) -> None:
+    def _update_learning_rate(self, optimizers: Union[list[th.optim.Optimizer], th.optim.Optimizer]) -> None:
         """
         Update the optimizers learning rate using the current learning rate schedule
         and the current progress remaining (from 1 to 0).
@@ -435,7 +436,7 @@ class BaseAlgorithm(ABC):
 
         return total_timesteps, callback
 
-    def _update_info_buffer(self, infos: list[dict[str, Any]], dones: np.ndarray | None = None) -> None:
+    def _update_info_buffer(self, infos: list[dict[str, Any]], dones: Optional[np.ndarray] = None) -> None:
         """
         Retrieve reward, episode length, episode success and update the buffer
         if using Monitor wrapper or a GoalEnv.
@@ -456,7 +457,7 @@ class BaseAlgorithm(ABC):
             if maybe_is_success is not None and dones[idx]:
                 self.ep_success_buffer.append(maybe_is_success)
 
-    def get_env(self) -> VecEnv | None:
+    def get_env(self) -> Optional[VecEnv]:
         """
         Returns the current environment (can be None if not defined).
 
@@ -464,7 +465,7 @@ class BaseAlgorithm(ABC):
         """
         return self.env
 
-    def get_vec_normalize_env(self) -> VecNormalize | None:
+    def get_vec_normalize_env(self) -> Optional[VecNormalize]:
         """
         Return the ``VecNormalize`` wrapper of the training env
         if it exists.
@@ -536,11 +537,11 @@ class BaseAlgorithm(ABC):
 
     def predict(
         self,
-        observation: np.ndarray | dict[str, np.ndarray],
-        state: tuple[np.ndarray, ...] | None = None,
-        episode_start: np.ndarray | None = None,
+        observation: Union[np.ndarray, dict[str, np.ndarray]],
+        state: Optional[tuple[np.ndarray, ...]] = None,
+        episode_start: Optional[np.ndarray] = None,
         deterministic: bool = False,
-    ) -> tuple[np.ndarray, tuple[np.ndarray, ...] | None]:
+    ) -> tuple[np.ndarray, Optional[tuple[np.ndarray, ...]]]:
         """
         Get the policy action from an observation (and optional hidden state).
         Includes sugar-coating to handle different observations (e.g. normalizing images).
@@ -556,7 +557,7 @@ class BaseAlgorithm(ABC):
         """
         return self.policy.predict(observation, state, episode_start, deterministic)
 
-    def set_random_seed(self, seed: int | None = None) -> None:
+    def set_random_seed(self, seed: Optional[int] = None) -> None:
         """
         Set the seed of the pseudo-random generators
         (python, numpy, pytorch, gym, action_space)
@@ -573,9 +574,9 @@ class BaseAlgorithm(ABC):
 
     def set_parameters(
         self,
-        load_path_or_dict: str | TensorDict,
+        load_path_or_dict: Union[str, TensorDict],
         exact_match: bool = True,
-        device: th.device | str = "auto",
+        device: Union[th.device, str] = "auto",
     ) -> None:
         """
         Load parameters from a given zip-file or a nested dictionary containing parameters for
@@ -642,10 +643,10 @@ class BaseAlgorithm(ABC):
     @classmethod
     def load(  # noqa: C901
         cls: type[SelfBaseAlgorithm],
-        path: str | pathlib.Path | io.BufferedIOBase,
-        env: GymEnv | None = None,
-        device: th.device | str = "auto",
-        custom_objects: dict[str, Any] | None = None,
+        path: Union[str, pathlib.Path, io.BufferedIOBase],
+        env: Optional[GymEnv] = None,
+        device: Union[th.device, str] = "auto",
+        custom_objects: Optional[dict[str, Any]] = None,
         print_system_info: bool = False,
         force_reset: bool = True,
         **kwargs,
@@ -818,9 +819,9 @@ class BaseAlgorithm(ABC):
 
     def save(
         self,
-        path: str | pathlib.Path | io.BufferedIOBase,
-        exclude: Iterable[str] | None = None,
-        include: Iterable[str] | None = None,
+        path: Union[str, pathlib.Path, io.BufferedIOBase],
+        exclude: Optional[Iterable[str]] = None,
+        include: Optional[Iterable[str]] = None,
     ) -> None:
         """
         Save all the attributes of the object and the model parameters in a zip-file.

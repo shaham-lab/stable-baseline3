@@ -5,7 +5,7 @@ import json
 import os
 import time
 from glob import glob
-from typing import TYPE_CHECKING, Any, SupportsFloat
+from typing import Any, Optional, SupportsFloat, TYPE_CHECKING, Union
 
 import gymnasium as gym
 from gymnasium.core import ActType, ObsType
@@ -33,7 +33,7 @@ class Monitor(gym.Wrapper[ObsType, ActType, ObsType, ActType]):
     def __init__(
         self,
         env: gym.Env,
-        filename: str | None = None,
+        filename: Optional[str] = None,
         allow_early_resets: bool = True,
         reset_keywords: tuple[str, ...] = (),
         info_keywords: tuple[str, ...] = (),
@@ -177,7 +177,7 @@ class ResultsWriter:
     def __init__(
         self,
         filename: str = "",
-        header: dict[str, float | str] | None = None,
+        header: Optional[dict[str, Union[float, str]]] = None,
         extra_keys: tuple[str, ...] = (),
         override_existing: bool = True,
     ):

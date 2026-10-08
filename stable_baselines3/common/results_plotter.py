@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from typing import Optional
 
 import numpy as np
 
@@ -101,12 +102,12 @@ def plot_curves(
     max_x = max(xy[0][-1] for xy in xy_list)
     min_x = 0
     for _, (x, y) in enumerate(xy_list):
-        plt.scatter(x, y, s=2)
+        plt.scatter(x, y, s=2, color="yellow")
         # Do not plot the smoothed curve at all if the timeseries is shorter than window size.
         if x.shape[0] >= EPISODES_WINDOW:
             # Compute and plot rolling mean with window of size EPISODE_WINDOW
             x, y_mean = window_func(x, y, EPISODES_WINDOW, np.mean)
-            plt.plot(x, y_mean)
+            plt.plot(x, y_mean, color="black")
     plt.xlim(min_x, max_x)
     plt.title(title)
     plt.xlabel(x_axis)
@@ -115,7 +116,7 @@ def plot_curves(
 
 
 def plot_results(
-    dirs: list[str], num_timesteps: int | None, x_axis: str, task_name: str, figsize: tuple[int, int] = (8, 2)
+    dirs: list[str], num_timesteps: Optional[int], x_axis: str, task_name: str, figsize: tuple[int, int] = (8, 2)
 ) -> None:
     """
     Plot the results using csv files from ``Monitor`` wrapper.

@@ -102,18 +102,18 @@ def patch_dqn_names_(model):
 
 
 def params_should_match(params, other_params):
-    for param, other_param in zip(params, other_params, strict=True):
+    for param, other_param in zip(params, other_params):
         assert th.allclose(param, other_param)
 
 
 def params_should_differ(params, other_params):
-    for param, other_param in zip(params, other_params, strict=True):
+    for param, other_param in zip(params, other_params):
         assert not th.allclose(param, other_param)
 
 
 def check_td3_feature_extractor_match(model):
     for (key, actor_param), critic_param in zip(
-        model.actor_target.named_parameters(), model.critic_target.parameters(), strict=False
+        model.actor_target.named_parameters(), model.critic_target.parameters()
     ):
         if "features_extractor" in key:
             assert th.allclose(actor_param, critic_param), key
@@ -121,7 +121,7 @@ def check_td3_feature_extractor_match(model):
 
 def check_td3_feature_extractor_differ(model):
     for (key, actor_param), critic_param in zip(
-        model.actor_target.named_parameters(), model.critic_target.parameters(), strict=False
+        model.actor_target.named_parameters(), model.critic_target.parameters()
     ):
         if "features_extractor" in key:
             assert not th.allclose(actor_param, critic_param), key

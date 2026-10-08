@@ -1,5 +1,5 @@
 import warnings
-from typing import Any
+from typing import Any, Union
 
 import gymnasium as gym
 import numpy as np
@@ -29,7 +29,7 @@ def _is_numpy_array_space(space: spaces.Space) -> bool:
     return not isinstance(space, (spaces.Dict, spaces.Tuple))
 
 
-def _starts_at_zero(space: spaces.Discrete | spaces.MultiDiscrete) -> bool:
+def _starts_at_zero(space: Union[spaces.Discrete, spaces.MultiDiscrete]) -> bool:
     """
     Return False if a (Multi)Discrete space has a non-zero start.
     """
@@ -225,7 +225,7 @@ def _check_goal_env_obs(obs: dict, observation_space: spaces.Dict, method_name: 
 
 
 def _check_goal_env_compute_reward(
-    obs: dict[str, np.ndarray | int],
+    obs: dict[str, Union[np.ndarray, int]],
     env: gym.Env,
     reward: float,
     info: dict[str, Any],
@@ -251,7 +251,7 @@ def _check_goal_env_compute_reward(
     assert rewards[0] == reward, f"Vectorized computation of reward differs from single computation: {rewards[0]} != {reward}"
 
 
-def _check_obs(obs: tuple | dict | np.ndarray | int, observation_space: spaces.Space, method_name: str) -> None:
+def _check_obs(obs: Union[tuple, dict, np.ndarray, int], observation_space: spaces.Space, method_name: str) -> None:
     """
     Check that the observation returned by the environment
     correspond to the declared one.
@@ -293,7 +293,7 @@ def _check_obs(obs: tuple | dict | np.ndarray | int, observation_space: spaces.S
                 )
                 message += f"{len(invalid_indices[0])} invalid indices: \n"
 
-                for index in zip(*invalid_indices, strict=True):
+                for index in zip(*invalid_indices):
                     index_str = ",".join(map(str, index))
                     message += (
                         f"Expected: {lower_bounds[index]} <= obs[{index_str}] <= {upper_bounds[index]}, "

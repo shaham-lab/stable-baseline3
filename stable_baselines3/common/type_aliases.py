@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from enum import Enum
-from typing import TYPE_CHECKING, Any, NamedTuple, Protocol, SupportsFloat, Union
+from typing import Any, NamedTuple, Optional, Protocol, SupportsFloat, TYPE_CHECKING, Union
 
 import gymnasium as gym
 import numpy as np
@@ -54,7 +54,7 @@ class ReplayBufferSamples(NamedTuple):
     dones: th.Tensor
     rewards: th.Tensor
     # For n-step replay buffer
-    discounts: th.Tensor | None = None
+    discounts: Optional[th.Tensor] = None
 
 
 class DictReplayBufferSamples(NamedTuple):
@@ -63,7 +63,7 @@ class DictReplayBufferSamples(NamedTuple):
     next_observations: TensorDict
     dones: th.Tensor
     rewards: th.Tensor
-    discounts: th.Tensor | None = None
+    discounts: Optional[th.Tensor] = None
 
 
 class RolloutReturn(NamedTuple):
@@ -85,11 +85,11 @@ class TrainFreq(NamedTuple):
 class PolicyPredictor(Protocol):
     def predict(
         self,
-        observation: np.ndarray | dict[str, np.ndarray],
-        state: tuple[np.ndarray, ...] | None = None,
-        episode_start: np.ndarray | None = None,
+        observation: Union[np.ndarray, dict[str, np.ndarray]],
+        state: Optional[tuple[np.ndarray, ...]] = None,
+        episode_start: Optional[np.ndarray] = None,
         deterministic: bool = False,
-    ) -> tuple[np.ndarray, tuple[np.ndarray, ...] | None]:
+    ) -> tuple[np.ndarray, Optional[tuple[np.ndarray, ...]]]:
         """
         Get the policy action from an observation (and optional hidden state).
         Includes sugar-coating to handle different observations (e.g. normalizing images).

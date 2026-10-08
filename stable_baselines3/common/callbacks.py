@@ -2,7 +2,7 @@ import os
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import Any, Optional, TYPE_CHECKING, Union
 
 import gymnasium as gym
 import numpy as np
@@ -153,7 +153,7 @@ class EventCallback(BaseCallback):
     :param verbose: Verbosity level: 0 for no output, 1 for info messages, 2 for debug messages
     """
 
-    def __init__(self, callback: BaseCallback | None = None, verbose: int = 0):
+    def __init__(self, callback: Optional[BaseCallback] = None, verbose: int = 0):
         super().__init__(verbose=verbose)
         self.callback = callback
         # Give access to the parent
@@ -329,7 +329,7 @@ class ConvertCallback(BaseCallback):
     :param verbose: Verbosity level: 0 for no output, 1 for info messages, 2 for debug messages
     """
 
-    def __init__(self, callback: Callable[[dict[str, Any], dict[str, Any]], bool] | None, verbose: int = 0):
+    def __init__(self, callback: Optional[Callable[[dict[str, Any], dict[str, Any]], bool]], verbose: int = 0):
         super().__init__(verbose)
         self.callback = callback
 
@@ -369,13 +369,13 @@ class EvalCallback(EventCallback):
 
     def __init__(
         self,
-        eval_env: gym.Env | VecEnv,
-        callback_on_new_best: BaseCallback | None = None,
-        callback_after_eval: BaseCallback | None = None,
+        eval_env: Union[gym.Env, VecEnv],
+        callback_on_new_best: Optional[BaseCallback] = None,
+        callback_after_eval: Optional[BaseCallback] = None,
         n_eval_episodes: int = 5,
         eval_freq: int = 10000,
-        log_path: str | None = None,
-        best_model_save_path: str | None = None,
+        log_path: Optional[str] = None,
+        best_model_save_path: Optional[str] = None,
         deterministic: bool = True,
         render: bool = False,
         verbose: int = 1,

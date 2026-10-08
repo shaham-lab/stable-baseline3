@@ -1,6 +1,6 @@
 import warnings
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Optional, Union
 
 import gymnasium as gym
 import numpy as np
@@ -11,15 +11,15 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecEnv, VecMonitor, is
 
 def evaluate_policy(
     model: "type_aliases.PolicyPredictor",
-    env: gym.Env | VecEnv,
+    env: Union[gym.Env, VecEnv],
     n_eval_episodes: int = 10,
     deterministic: bool = True,
     render: bool = False,
-    callback: Callable[[dict[str, Any], dict[str, Any]], None] | None = None,
-    reward_threshold: float | None = None,
+    callback: Optional[Callable[[dict[str, Any], dict[str, Any]], None]] = None,
+    reward_threshold: Optional[float] = None,
     return_episode_rewards: bool = False,
     warn: bool = True,
-) -> tuple[float, float] | tuple[list[float], list[int]]:
+) -> Union[tuple[float, float], tuple[list[float], list[int]]]:
     """
     Runs the policy for ``n_eval_episodes`` episodes and outputs the average return
     per episode (sum of undiscounted rewards).

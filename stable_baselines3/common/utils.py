@@ -6,6 +6,8 @@ import re
 import warnings
 from collections import deque
 from collections.abc import Iterable
+from itertools import zip_longest
+from typing import Optional, Union
 
 import cloudpickle
 import gymnasium as gym
@@ -86,7 +88,7 @@ class FloatSchedule:
             (e.g. LinearSchedule, ConstantSchedule)
     """
 
-    def __init__(self, value_schedule: Schedule | float):
+    def __init__(self, value_schedule: Union[Schedule, float]):
         if isinstance(value_schedule, FloatSchedule):
             self.value_schedule: Schedule = value_schedule.value_schedule
         elif isinstance(value_schedule, (float, int)):
@@ -155,7 +157,7 @@ class ConstantSchedule:
 # and other classes like `LinearSchedule() instead
 
 
-def get_schedule_fn(value_schedule: Schedule | float) -> Schedule:
+def get_schedule_fn(value_schedule: Union[Schedule, float]) -> Schedule:
     """
     Transform (if needed) learning rate and clip range (for PPO)
     to callable.
@@ -220,7 +222,7 @@ def constant_fn(val: float) -> Schedule:
 # ==== End of deprecated schedule functions ====
 
 
-def get_device(device: th.device | str = "auto") -> th.device:
+def get_device(device: Union[th.device, str] = "auto") -> th.device:
     """
     Retrieve PyTorch device.
     It checks that the requested device is available first.
@@ -264,7 +266,7 @@ def get_latest_run_id(log_path: str = "", log_name: str = "") -> int:
 
 def configure_logger(
     verbose: int = 0,
-    tensorboard_log: str | None = None,
+    tensorboard_log: Optional[str] = None,
     tb_log_name: str = "",
     reset_num_timesteps: bool = True,
 ) -> Logger:
@@ -289,7 +291,7 @@ def configure_logger(
         if not reset_num_timesteps:
             # Continue training in the same directory
             latest_run_id -= 1
-        save_path = os.path.join(tensorboard_log, f"{tb_log_name}_{latest_run_id + 1}")
+        save_path = os.path.join(tensorboard_log, tb_log_name)
         if verbose >= 1:
             format_strings = ["stdout", "tensorboard"]
         else:
@@ -358,7 +360,7 @@ def is_vectorized_box_observation(observation: np.ndarray, observation_space: sp
         )
 
 
-def is_vectorized_discrete_observation(observation: int | np.ndarray, observation_space: spaces.Discrete) -> bool:
+def is_vectorized_discrete_observation(observation: Union[int, np.ndarray], observation_space: spaces.Discrete) -> bool:
     """
     For discrete observation type, detects and validates the shape,
     then returns whether or not the observation is vectorized.
@@ -464,7 +466,7 @@ def is_vectorized_dict_observation(observation: np.ndarray, observation_space: s
         )
 
 
-def is_vectorized_observation(observation: int | np.ndarray, observation_space: spaces.Space) -> bool:
+def is_vectorized_observation(observation: Union[int, np.ndarray], observation_space: spaces.Space) -> bool:
     """
     For every observation type, detects and validates the shape,
     then returns whether or not the observation is vectorized.
@@ -490,7 +492,7 @@ def is_vectorized_observation(observation: int | np.ndarray, observation_space: 
         raise ValueError(f"Error: Cannot determine if the observation is vectorized with the space type {observation_space}.")
 
 
-def safe_mean(arr: np.ndarray | list | deque) -> float:
+def safe_mean(arr: Union[np.ndarray, list, deque]) -> float:
     """
     Compute the mean of an array if there is at least one element.
     For empty array, return NaN. It is used for logging only.
@@ -518,13 +520,19 @@ def zip_strict(*iterables: Iterable) -> Iterable:
     r"""
     ``zip()`` function but enforces that iterables are of equal length.
     Raises ``ValueError`` if iterables not of equal length.
-    It used to be a polyfill for Python 3.19 taken from Stackoverflow #32954486.
-    Since Python 3.10 is the minimum version, it is kept only for legacy
-    and is just returning zip(..., strict=True).
+    Polyfill for ``zip(..., strict=True)``, which requires Python 3.10+,
+    taken from Stackoverflow #32954486.
 
     :param \*iterables: iterables to ``zip()``
     """
-    return zip(*iterables, strict=True)
+    # As in Stackoverflow #32954486, use
+    # new object for "empty" in case we have
+    # Nones in iterable.
+    sentinel = object()
+    for combo in zip_longest(*iterables, fillvalue=sentinel):
+        if sentinel in combo:
+            raise ValueError("Iterables have different lengths")
+        yield combo
 
 
 def polyak_update(
@@ -548,12 +556,12 @@ def polyak_update(
     :param tau: the soft update coefficient ("Polyak update", between 0 and 1)
     """
     with th.no_grad():
-        for param, target_param in zip(params, target_params, strict=True):
+        for param, target_param in zip_strict(params, target_params):
             target_param.data.mul_(1 - tau)
             th.add(target_param.data, param.data, alpha=tau, out=target_param.data)
 
 
-def obs_as_tensor(obs: np.ndarray | dict[str, np.ndarray], device: th.device) -> th.Tensor | TensorDict:
+def obs_as_tensor(obs: Union[np.ndarray, dict[str, np.ndarray]], device: th.device) -> Union[th.Tensor, TensorDict]:
     """
     Moves the observation to the given device.
 

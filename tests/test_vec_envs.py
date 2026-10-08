@@ -4,6 +4,7 @@ import itertools
 import multiprocessing
 import os
 import warnings
+from typing import Optional
 
 import gymnasium as gym
 import numpy as np
@@ -37,9 +38,9 @@ class CustomGymEnv(gym.Env):
         self.current_step = 0
         self.ep_length = 4
         self.render_mode = render_mode
-        self.current_options: dict | None = None
+        self.current_options: Optional[dict] = None
 
-    def reset(self, *, seed: int | None = None, options: dict | None = None):
+    def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
         if seed is not None:
             self.seed(seed)
         self.current_step = 0
@@ -224,7 +225,7 @@ class StepEnv(gym.Env):
         self.max_steps = max_steps
         self.current_step = 0
 
-    def reset(self, *, seed: int | None = None, options: dict | None = None):
+    def reset(self, *, seed: Optional[int] = None, options: Optional[dict] = None):
         self.current_step = 0
         return np.array([self.current_step], dtype="int"), {}
 
@@ -257,7 +258,7 @@ def test_vecenv_terminal_obs(vec_env_class, vec_env_wrapper):
         assert len(obs_b) == N_ENVS
         assert len(done_b) == N_ENVS
         assert len(info_b) == N_ENVS
-        env_iter = zip(prev_obs_b, obs_b, done_b, info_b, step_nums, strict=True)
+        env_iter = zip(prev_obs_b, obs_b, done_b, info_b, step_nums)
         for prev_obs, obs, done, info, final_step_num in env_iter:
             assert done == (step_num == final_step_num)
             if not done:
@@ -358,7 +359,7 @@ def test_vecenv_tuple_spaces(vec_env_class):
     def obs_assert(obs):
         assert isinstance(obs, tuple)
         assert len(obs) == len(space.spaces)
-        for values, inner_space in zip(obs, space.spaces, strict=True):
+        for values, inner_space in zip(obs, space.spaces):
             check_vecenv_obs(values, inner_space)
 
     return check_vecenv_spaces(vec_env_class, space, obs_assert)
