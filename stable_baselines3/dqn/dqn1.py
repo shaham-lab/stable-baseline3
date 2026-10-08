@@ -74,7 +74,6 @@ class DQN1(OffPolicyAlgorithm):
     # Linear schedule will be defined in `_setup_model()`
     exploration_schedule: Schedule
     q_net: QNetwork
-    q_net_target: QNetwork
     policy: DQNPolicy
 
     def __init__(
@@ -93,7 +92,6 @@ class DQN1(OffPolicyAlgorithm):
         replay_buffer_kwargs: Optional[dict[str, Any]] = None,
         optimize_memory_usage: bool = False,
         n_steps: int = 1,
-        target_update_interval: int = 10000,
         exploration_fraction: float = 0.1,
         exploration_initial_eps: float = 1.0,
         exploration_final_eps: float = 0.05,
@@ -134,13 +132,12 @@ class DQN1(OffPolicyAlgorithm):
             support_multi_env=True,
             is_dqn=True,
         )
-
+        print("Loss", "MSE")
+        print("buffer size", buffer_size)
+        print("TF lambda", tf_lambda)
         self.exploration_initial_eps = exploration_initial_eps
         self.exploration_final_eps = exploration_final_eps
         self.exploration_fraction = exploration_fraction
-        self.target_update_interval = target_update_interval
-        # For updating the target network with multiple envs:
-        self._n_calls = 0
         self.max_grad_norm = max_grad_norm
         # "epsilon" for the epsilon-greedy exploration
         self.exploration_rate = 0.0
@@ -154,38 +151,20 @@ class DQN1(OffPolicyAlgorithm):
         self._create_aliases()
         # Copy running stats, see GH issue #996
         self.batch_norm_stats = get_parameters_by_name(self.q_net, ["running_"])
-        self.batch_norm_stats_target = get_parameters_by_name(self.q_net_target, ["running_"])
         self.exploration_schedule = LinearSchedule(
             self.exploration_initial_eps,
             self.exploration_final_eps,
             self.exploration_fraction,
         )
 
-        if self.n_envs > 1:
-            if self.n_envs > self.target_update_interval:
-                warnings.warn(
-                    "The number of environments used is greater than the target network "
-                    f"update interval ({self.n_envs} > {self.target_update_interval}), "
-                    "therefore the target network will be updated after each call to env.step() "
-                    f"which corresponds to {self.n_envs} steps."
-                )
-
     def _create_aliases(self) -> None:
         self.q_net = self.policy.q_net
-        self.q_net_target = self.policy.q_net_target
 
     def _on_step(self) -> None:
         """
-        Update the exploration rate and target network if needed.
+        Update the exploration rate
         This method is called in ``collect_rollouts()`` after each step in the environment.
         """
-        self._n_calls += 1
-        # Account for multiple environments
-        # each call to step() corresponds to n_envs transitions
-        if self._n_calls % max(self.target_update_interval // self.n_envs, 1) == 0:
-            polyak_update(self.q_net.parameters(), self.q_net_target.parameters(), self.tau)
-            # Copy running stats, see GH issue #996
-            polyak_update(self.batch_norm_stats, self.batch_norm_stats_target, 1.0)
 
         self.exploration_rate = self.exploration_schedule(self._current_progress_remaining)
         self.logger.record("rollout/exploration_rate", self.exploration_rate)
@@ -200,30 +179,29 @@ class DQN1(OffPolicyAlgorithm):
         for _ in range(gradient_steps):
             # Sample replay buffer
             replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
-            # For n-step replay, discount factor is gamma**n_steps (when no early termination)
-            discounts = replay_data.discounts if replay_data.discounts is not None else self.gamma
-
+            next_observations = replay_data.next_observations
+            rewards = replay_data.rewards
+            dones = replay_data.dones
+            observations = replay_data.observations
             with th.no_grad():
-                # Compute the next Q-values using the target network
-                next_q_values = self.q_net_target(replay_data.next_observations)
+                # Compute the next Q-values using the current network
+                next_q_values = self.q_net(next_observations)
                 # Follow greedy policy: use the one with the highest value
                 next_q_values, _ = next_q_values.max(dim=1)
                 # Avoid potential broadcast issue
                 next_q_values = next_q_values.reshape(-1, 1)
                 # 1-step TD target
-                target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
+                target_q_values = rewards + (1 - dones) * self.gamma * next_q_values
 
             # Get current Q-values estimates
-            current_q_values = self.q_net(replay_data.observations)
+            current_q_values = self.q_net(observations)
 
             # Retrieve the q-values for the actions from the replay buffer
             current_q_values = th.gather(current_q_values, dim=1, index=replay_data.actions.long())
-
-            # Compute MSE loss (less sensitive to outliers)
-            # SUFT CHANGE
-            loss = F.mse_loss(current_q_values, target_q_values)
-            # SUFT OPE term
             old_q_values = th.gather(replay_data.old_values, dim=1, index=replay_data.actions.long())
+            # Compute MSE loss
+            loss = F.mse_loss(current_q_values, target_q_values)
+            # SUFT CHANGE
             suft_ope_term = F.mse_loss(current_q_values, old_q_values) * self.tf_lambda
             loss = loss + suft_ope_term
             # SUFT CHANGE until here
@@ -291,7 +269,7 @@ class DQN1(OffPolicyAlgorithm):
         )
 
     def _excluded_save_params(self) -> list[str]:
-        return [*super()._excluded_save_params(), "q_net", "q_net_target"]
+        return [*super()._excluded_save_params(), "q_net"]
 
     def _get_torch_save_params(self) -> tuple[list[str], list[str]]:
         state_dicts = ["policy", "policy.optimizer"]
