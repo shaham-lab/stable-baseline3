@@ -13,12 +13,12 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedul
 from stable_baselines3.common.utils import LinearSchedule, get_parameters_by_name, polyak_update
 from stable_baselines3.dqn.policies import CnnPolicy, DQNPolicy, MlpPolicy, MultiInputPolicy, QNetwork
 
-SelfDQN = TypeVar("SelfDQN", bound="DQN")
+SelfDQN1 = TypeVar("SelfDQN1", bound="DQN1")
 
 
-class DQN(OffPolicyAlgorithm):
+class DQN1(OffPolicyAlgorithm):
     """
-    Deep Q-Network (Vanilla DQN 2015)
+    Deep Q-Network (DQN- 2013)
 
     Paper: https://arxiv.org/abs/1312.5602, https://www.nature.com/articles/nature14236
     Default hyperparameters are taken from the Nature paper,
@@ -273,14 +273,14 @@ class DQN(OffPolicyAlgorithm):
         return action, state
 
     def learn(
-        self: SelfDQN,
+        self: SelfDQN1,
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 4,
         tb_log_name: str = "DQN",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
-    ) -> SelfDQN:
+    ) -> SelfDQN1:
         return super().learn(
             total_timesteps=total_timesteps,
             callback=callback,

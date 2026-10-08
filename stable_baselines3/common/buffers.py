@@ -103,7 +103,7 @@ class BaseBuffer(ABC):
         self.pos = 0
         self.full = False
 
-    def sample(self, batch_size: int, env: VecNormalize | None = None):
+    def sample(self, batch_size: int, env: Optional[VecNormalize] = None):
         """
         :param batch_size: Number of element to sample
         :param env: associated gym VecEnv
@@ -181,6 +181,7 @@ class ReplayBuffer(BaseBuffer):
     rewards: np.ndarray
     dones: np.ndarray
     timeouts: np.ndarray
+    old_values_to_store: np.ndarray
 
     def __init__(
         self,
@@ -191,6 +192,7 @@ class ReplayBuffer(BaseBuffer):
         n_envs: int = 1,
         optimize_memory_usage: bool = False,
         handle_timeout_termination: bool = True,
+        is_dqn: bool = False,
     ):
         super().__init__(buffer_size, observation_space, action_space, device, n_envs=n_envs)
 
@@ -222,6 +224,18 @@ class ReplayBuffer(BaseBuffer):
 
         self.rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.dones = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        # Flag forwarded by the agent:
+        # DQN / DDQN / DQN1 (Q-values of all actions), otherwise SAC (one value per critic)
+        self.is_dqn = is_dqn
+        if self.is_dqn:
+            # DQN
+            self.old_values = np.zeros((self.buffer_size, self.n_envs, self.action_space.n), dtype=np.float32)
+            self.old_next_values = np.zeros((self.buffer_size, self.n_envs, self.action_space.n), dtype=np.float32)
+        else:
+            # SAC
+            self.old_values1 = np.zeros((self.buffer_size, self.n_envs, 1), dtype=np.float32)
+            self.old_values2 = np.zeros((self.buffer_size, self.n_envs, 1), dtype=np.float32)
+        self.optimizer_steps = np.zeros((self.buffer_size, self.n_envs), dtype=np.int64)
         # Handle timeouts termination properly if needed
         # see https://github.com/DLR-RM/stable-baselines3/issues/284
         self.handle_timeout_termination = handle_timeout_termination
@@ -229,8 +243,18 @@ class ReplayBuffer(BaseBuffer):
 
         if psutil is not None:
             total_memory_usage: float = (
-                self.observations.nbytes + self.actions.nbytes + self.rewards.nbytes + self.dones.nbytes
+                self.observations.nbytes
+                + self.actions.nbytes
+                + self.rewards.nbytes
+                + self.dones.nbytes
+                + self.optimizer_steps.nbytes
             )
+            if self.is_dqn:
+                # DQN
+                total_memory_usage += self.old_values.nbytes + self.old_next_values.nbytes
+            else:
+                # SAC
+                total_memory_usage += self.old_values1.nbytes + self.old_values2.nbytes
 
             if not optimize_memory_usage:
                 total_memory_usage += self.next_observations.nbytes
@@ -251,7 +275,9 @@ class ReplayBuffer(BaseBuffer):
         action: np.ndarray,
         reward: np.ndarray,
         done: np.ndarray,
+        old_values_to_store,
         infos: list[dict[str, Any]],
+        old_next_values_to_store=None,
     ) -> None:
         # Reshape needed when using multiple envs with discrete observations
         # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
@@ -273,6 +299,18 @@ class ReplayBuffer(BaseBuffer):
         self.actions[self.pos] = np.array(action)
         self.rewards[self.pos] = np.array(reward)
         self.dones[self.pos] = np.array(done)
+        if self.is_dqn:
+            # DQN
+            self.old_values[self.pos] = old_values_to_store.detach().cpu().numpy()
+            if old_next_values_to_store is not None:
+                self.old_next_values[self.pos] = old_next_values_to_store.detach().cpu().numpy()
+        else:
+            # SAC
+            first_old = old_values_to_store[0].detach().cpu().numpy()
+            # last critic (the second one for SAC)
+            second_old = old_values_to_store[-1].detach().cpu().numpy()
+            self.old_values1[self.pos] = np.array(first_old)
+            self.old_values2[self.pos] = np.array(second_old)
 
         if self.handle_timeout_termination:
             self.timeouts[self.pos] = np.array([info.get("TimeLimit.truncated", False) for info in infos])
@@ -282,7 +320,7 @@ class ReplayBuffer(BaseBuffer):
             self.full = True
             self.pos = 0
 
-    def sample(self, batch_size: int, env: VecNormalize | None = None) -> ReplayBufferSamples:
+    def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
         """
         Sample elements from the replay buffer.
         Custom sampling when using memory efficient variant,
@@ -322,7 +360,19 @@ class ReplayBuffer(BaseBuffer):
             (self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices])).reshape(-1, 1),
             self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env),
         )
-        return ReplayBufferSamples(*tuple(map(self.to_torch, data)))
+        if self.is_dqn:
+            # DQN
+            old_values = {
+                "old_values": self.to_torch(self.old_values[batch_inds, env_indices]),
+                "old_next_values": self.to_torch(self.old_next_values[batch_inds, env_indices]),
+            }
+        else:
+            # SAC
+            old_values = {
+                "old_values1": self.to_torch(self.old_values1[batch_inds, env_indices]),
+                "old_values2": self.to_torch(self.old_values2[batch_inds, env_indices]),
+            }
+        return ReplayBufferSamples(*tuple(map(self.to_torch, data)), **old_values)
 
     @staticmethod
     def _maybe_cast_dtype(dtype: Optional[np.typing.DTypeLike]) -> Optional[np.typing.DTypeLike]:

@@ -9,7 +9,7 @@ from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.policies import BasePolicy, ContinuousCritic
-from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
+from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule, ReplayBufferSamples
 from stable_baselines3.common.utils import get_parameters_by_name, polyak_update
 from stable_baselines3.sac.policies import Actor, CnnPolicy, MlpPolicy, MultiInputPolicy, SACPolicy
 
@@ -121,6 +121,7 @@ class SAC(OffPolicyAlgorithm):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
+        tf_lambda: float = 0.0  # SUFT CHANGE
     ):
         super().__init__(
             policy,
@@ -152,12 +153,13 @@ class SAC(OffPolicyAlgorithm):
         )
 
         self.target_entropy = target_entropy
-        self.log_ent_coef = None  # type: th.Tensor | None
+        self.log_ent_coef = None  # type: Optional[th.Tensor]
         # Entropy coefficient / Entropy temperature
         # Inverse of the reward scale
         self.ent_coef = ent_coef
         self.target_update_interval = target_update_interval
-        self.ent_coef_optimizer: th.optim.Adam | None = None
+        self.ent_coef_optimizer: Optional[th.optim.Adam] = None
+        self.tf_lambda = tf_lambda  # SUFT CHANGE
 
         if _init_setup_model:
             self._setup_model()
@@ -275,6 +277,11 @@ class SAC(OffPolicyAlgorithm):
 
             # Compute critic loss
             critic_loss = 0.5 * sum(F.mse_loss(current_q, target_q_values) for current_q in current_q_values)
+            # SUFT CHANGE
+            suft_ope_term = (0.5 * F.mse_loss(current_q_values[0], replay_data.old_values1) +
+                             F.mse_loss(current_q_values[1], replay_data.old_values2)) * self.tf_lambda
+            critic_loss = critic_loss + suft_ope_term
+            # SUFT CHANGE until here
             assert isinstance(critic_loss, th.Tensor)  # for type checker
             critic_losses.append(critic_loss.item())  # type: ignore[union-attr]
 

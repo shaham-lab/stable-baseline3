@@ -17,7 +17,7 @@ from stable_baselines3.common.noise import ActionNoise, VectorizedActionNoise
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.save_util import load_from_pkl, save_to_pkl
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, RolloutReturn, Schedule, TrainFreq, TrainFrequencyUnit
-from stable_baselines3.common.utils import safe_mean, should_collect_more_steps
+from stable_baselines3.common.utils import obs_as_tensor, safe_mean, should_collect_more_steps
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.her.her_replay_buffer import HerReplayBuffer
 
@@ -80,6 +80,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
     """
 
     actor: th.nn.Module
+    # Also store the Q-values of the next state in the replay buffer (DQN family only)
+    store_old_next_values: bool = False
 
     def __init__(
         self,
@@ -101,6 +103,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         policy_kwargs: Optional[dict[str, Any]] = None,
         stats_window_size: int = 100,
         tensorboard_log: Optional[str] = None,
+        tensor_board_logger_name: Optional[str] = None,
         verbose: int = 0,
         device: Union[th.device, str] = "auto",
         support_multi_env: bool = False,
@@ -111,6 +114,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
         use_sde_at_warmup: bool = False,
         sde_support: bool = True,
         supported_action_spaces: Optional[tuple[type[spaces.Space], ...]] = None,
+        is_dqn: bool = False,
     ):
         super().__init__(
             policy=policy,
@@ -119,6 +123,7 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             policy_kwargs=policy_kwargs,
             stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
+            tensor_board_logger_name=tensor_board_logger_name,
             verbose=verbose,
             device=device,
             support_multi_env=support_multi_env,
@@ -149,6 +154,8 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             self.policy_kwargs["use_sde"] = self.use_sde
         # For gSDE only
         self.use_sde_at_warmup = use_sde_at_warmup
+        # True for the DQN family (DQN, DDQN, DQN1), False for SAC
+        self.is_dqn = is_dqn
 
     def _convert_train_freq(self) -> None:
         """
@@ -202,6 +209,9 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             # Make a local copy as we should not pickle
             # the environment when using HerReplayBuffer
             replay_buffer_kwargs = self.replay_buffer_kwargs.copy()
+            if not issubclass(self.replay_buffer_class, DictReplayBuffer):
+                # Tell the buffer which old values to store (DQN or SAC ones)
+                replay_buffer_kwargs["is_dqn"] = self.is_dqn
             if issubclass(self.replay_buffer_class, HerReplayBuffer):
                 assert self.env is not None, "You must pass an environment when using `HerReplayBuffer`"
                 replay_buffer_kwargs["env"] = self.env
@@ -509,13 +519,35 @@ class OffPolicyAlgorithm(BaseAlgorithm):
                     if self._vec_normalize_env is not None:
                         next_obs[i] = self._vec_normalize_env.unnormalize_obs(next_obs[i, :])  # type: ignore[assignment]
 
+        # Psi
+        obs_tensor = obs_as_tensor(self._last_original_obs, self.device)
+        old_next_values_to_store = None
+        if self.is_dqn:
+            # DQN / DDQN / DQN1: Q-values of all the actions
+            # Switch to eval mode (this affects batch norm / dropout)
+            self.policy.q_net.set_training_mode(False)
+            with th.no_grad():
+                old_values_to_store = self.policy.q_net(obs_tensor).cpu()
+                if self.store_old_next_values:
+                    # compute the value of the next state
+                    next_obs_tensor = obs_as_tensor(next_obs, self.device)
+                    old_next_values_to_store = self.policy.q_net(next_obs_tensor).cpu()
+        else:
+            # SAC: one value per critic
+            self.policy.critic.set_training_mode(False)
+            with th.no_grad():
+                old_values_to_store = self.policy.critic(
+                    obs_tensor, th.as_tensor(buffer_action, dtype=th.float32, device=self.device)
+                )
         replay_buffer.add(
             self._last_original_obs,  # type: ignore[arg-type]
             next_obs,  # type: ignore[arg-type]
             buffer_action,
             reward_,
             dones,
+            old_values_to_store,
             infos,
+            old_next_values_to_store=old_next_values_to_store,
         )
 
         self._last_obs = new_obs
