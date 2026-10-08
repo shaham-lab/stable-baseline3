@@ -21,7 +21,7 @@ import time
 from datetime import timedelta
 
 if __name__ == "__main__":
-    agent_name = "DQN" # TODO: change this
+    agent_name = "DQN1" # TODO: change this
     buffer_size = 100000 # 100K
     timesteps = 100000 # Atari 100K
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")

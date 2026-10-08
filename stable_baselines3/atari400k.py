@@ -18,33 +18,28 @@ if __name__ == "__main__":
     # get CF lambda from command line
     tf_lambda = float(sys.argv[2])
     print("tf_lambda", tf_lambda)
-    # get theory from command line
-    theory = sys.argv[3]
-    print("theory", theory)
     # get the agent
-    agent_name = sys.argv[4]
+    agent_name = sys.argv[3]
     print("agent_name", agent_name)
     # get the timestep from command line
-    timesteps = int(sys.argv[5])
+    timesteps = int(sys.argv[4])
     print("timesteps", timesteps)
     # get the run number from command line
-    run_number = sys.argv[6]
+    run_number = sys.argv[5]
     print("run_number", run_number)
-    # get the random seed
-    random_seed = int(sys.argv[7])
-    print("random_seed", random_seed)
     # get the environment from command line
-    gym_env_name = sys.argv[8]
+    gym_env_name = sys.argv[6]
     print("gym_env_name", gym_env_name)
-
+    buffer_size = int(sys.argv[7])
+    print("buffer_size", buffer_size)
     # get the model name from command line
     model_name = gym_env_name + "_" + agent_name + "_atari_tf_lambda_" + str(tf_lambda) + "_timesteps_" + str(timesteps) + "_run_" + str(
-        run_number) + "_seed_" + str(random_seed)
+        run_number)
     model_name = model_name.replace("ALE/", "")
     print("model_name", model_name)
 
     # Full directory path
-    full_log_dir = os.path.join("/home/dsi/fiskustal/talfiskus/stable-baselines3/", theory, agent_name, gym_env_name.replace("ALE/", ""))
+    full_log_dir = os.path.join("/home/dsi/fiskustal/talfiskus/stable-baselines3/", agent_name, gym_env_name.replace("ALE/", ""))
     if not os.path.exists(full_log_dir):
         os.makedirs(full_log_dir, exist_ok=True)
     print("full_log_dir", full_log_dir)
@@ -52,25 +47,19 @@ if __name__ == "__main__":
     # v5: disable the built-in frame skip (AtariWrapper already skips 4 frames)
     # and let ALE alone handle sticky actions
     atari_env_kwargs = {"frameskip": 1, "repeat_action_probability": 0.25}
-    env = make_atari_env(gym_env_name, seed=random_seed, env_kwargs=atari_env_kwargs)
+    env = make_atari_env(gym_env_name, env_kwargs=atari_env_kwargs)
     # Stack 4 frames
     env = VecFrameStack(env, n_stack=4)
     # Eval env
-    eval_env = make_atari_env(gym_env_name, seed=random_seed, env_kwargs=atari_env_kwargs)
+    eval_env = make_atari_env(gym_env_name, env_kwargs=atari_env_kwargs)
     eval_env = VecFrameStack(eval_env, n_stack=4)
     eval_callback = EvalCallback(eval_env, eval_freq=10000, verbose=1, n_eval_episodes=100)
     # select agent by name
     if agent_name == 'DQN':
-        buffer_size = int(sys.argv[9])
-        print("buffer_size", buffer_size)
         model = DQN('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=buffer_size)
     elif agent_name == 'DDQN':
-        buffer_size = int(sys.argv[9])
-        print("buffer_size", buffer_size)
         model = DDQN('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=buffer_size)
     elif agent_name == 'DQN1':
-        buffer_size = int(sys.argv[9])
-        print("buffer_size", buffer_size)
         model = DQN1('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=buffer_size)
 
     else:
