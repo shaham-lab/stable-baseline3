@@ -230,7 +230,6 @@ class ReplayBuffer(BaseBuffer):
         if self.is_dqn:
             # DQN
             self.old_values = np.zeros((self.buffer_size, self.n_envs, self.action_space.n), dtype=np.float32)
-            self.old_next_values = np.zeros((self.buffer_size, self.n_envs, self.action_space.n), dtype=np.float32)
         else:
             # SAC
             self.old_values1 = np.zeros((self.buffer_size, self.n_envs, 1), dtype=np.float32)
@@ -251,7 +250,7 @@ class ReplayBuffer(BaseBuffer):
             )
             if self.is_dqn:
                 # DQN
-                total_memory_usage += self.old_values.nbytes + self.old_next_values.nbytes
+                total_memory_usage += self.old_values.nbytes
             else:
                 # SAC
                 total_memory_usage += self.old_values1.nbytes + self.old_values2.nbytes
@@ -277,7 +276,6 @@ class ReplayBuffer(BaseBuffer):
         done: np.ndarray,
         old_values_to_store,
         infos: list[dict[str, Any]],
-        old_next_values_to_store=None,
     ) -> None:
         # Reshape needed when using multiple envs with discrete observations
         # as numpy cannot broadcast (n_discrete,) to (n_discrete, 1)
@@ -302,8 +300,6 @@ class ReplayBuffer(BaseBuffer):
         if self.is_dqn:
             # DQN
             self.old_values[self.pos] = old_values_to_store.detach().cpu().numpy()
-            if old_next_values_to_store is not None:
-                self.old_next_values[self.pos] = old_next_values_to_store.detach().cpu().numpy()
         else:
             # SAC
             first_old = old_values_to_store[0].detach().cpu().numpy()
@@ -364,7 +360,6 @@ class ReplayBuffer(BaseBuffer):
             # DQN
             old_values = {
                 "old_values": self.to_torch(self.old_values[batch_inds, env_indices]),
-                "old_next_values": self.to_torch(self.old_next_values[batch_inds, env_indices]),
             }
         else:
             # SAC

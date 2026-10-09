@@ -55,7 +55,6 @@ class ReplayBufferSamples(NamedTuple):
     rewards: th.Tensor
     # Only the fields of the running agent are filled, the others stay None
     old_values: Optional[th.Tensor] = None  # DQN / DDQN / DQN1
-    old_next_values: Optional[th.Tensor] = None  # DQN / DDQN / DQN1
     old_values1: Optional[th.Tensor] = None  # SAC
     old_values2: Optional[th.Tensor] = None  # SAC
     # For n-step replay buffer

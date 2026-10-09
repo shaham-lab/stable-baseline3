@@ -80,9 +80,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
     """
 
     actor: th.nn.Module
-    # Also store the Q-values of the next state in the replay buffer (DQN family only)
-    store_old_next_values: bool = False
-
     def __init__(
         self,
         policy: Union[str, type[BasePolicy]],
@@ -521,17 +518,12 @@ class OffPolicyAlgorithm(BaseAlgorithm):
 
         # Psi
         obs_tensor = obs_as_tensor(self._last_original_obs, self.device)
-        old_next_values_to_store = None
         if self.is_dqn:
             # DQN / DDQN / DQN1: Q-values of all the actions
             # Switch to eval mode (this affects batch norm / dropout)
             self.policy.q_net.set_training_mode(False)
             with th.no_grad():
                 old_values_to_store = self.policy.q_net(obs_tensor).cpu()
-                if self.store_old_next_values:
-                    # compute the value of the next state
-                    next_obs_tensor = obs_as_tensor(next_obs, self.device)
-                    old_next_values_to_store = self.policy.q_net(next_obs_tensor).cpu()
         else:
             # SAC: one value per critic
             self.policy.critic.set_training_mode(False)
@@ -547,7 +539,6 @@ class OffPolicyAlgorithm(BaseAlgorithm):
             dones,
             old_values_to_store,
             infos,
-            old_next_values_to_store=old_next_values_to_store,
         )
 
         self._last_obs = new_obs
