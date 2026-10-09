@@ -53,7 +53,7 @@ if __name__ == "__main__":
     # Eval env
     eval_env = make_atari_env(gym_env_name, env_kwargs=atari_env_kwargs)
     eval_env = VecFrameStack(eval_env, n_stack=4)
-    eval_callback = EvalCallback(eval_env, eval_freq=10000, verbose=1, n_eval_episodes=100, deterministic=False)
+    eval_callback = EvalCallback(eval_env, eval_freq=100000, verbose=1, n_eval_episodes=100, deterministic=False)
     # select agent by name
     if agent_name == 'DQN':
         model = DQN('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=buffer_size)
