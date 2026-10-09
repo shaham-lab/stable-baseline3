@@ -197,8 +197,9 @@ class DQN1(OffPolicyAlgorithm):
             # Compute MSE loss
             loss = F.mse_loss(current_q_values, target_q_values)
             # SUFT CHANGE
-            suft_ope_term = F.mse_loss(current_q_values, replay_data.old_values) * self.tf_lambda
-            loss = loss + suft_ope_term
+            if self.tf_lambda > 0:
+                suft_ope_term = F.mse_loss(current_q_values, replay_data.old_values) * self.tf_lambda
+                loss = loss + suft_ope_term
             # SUFT CHANGE until here
             losses.append(loss.item())
 

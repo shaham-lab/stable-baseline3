@@ -223,9 +223,10 @@ class DQN(OffPolicyAlgorithm):
             # SUFT CHANGE
             loss = F.mse_loss(current_q_values, target_q_values)
             # SUFT OPE term
-            old_q_values = th.gather(replay_data.old_values, dim=1, index=replay_data.actions.long())
-            suft_ope_term = F.mse_loss(current_q_values, old_q_values) * self.tf_lambda
-            loss = loss + suft_ope_term
+            if self.tf_lambda > 0:
+                old_q_values = th.gather(replay_data.old_values, dim=1, index=replay_data.actions.long())
+                suft_ope_term = F.mse_loss(current_q_values, old_q_values) * self.tf_lambda
+                loss = loss + suft_ope_term
             # SUFT CHANGE until here
             losses.append(loss.item())
 

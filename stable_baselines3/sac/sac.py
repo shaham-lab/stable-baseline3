@@ -278,9 +278,10 @@ class SAC(OffPolicyAlgorithm):
             # Compute critic loss
             critic_loss = 0.5 * sum(F.mse_loss(current_q, target_q_values) for current_q in current_q_values)
             # SUFT CHANGE
-            suft_ope_term = (0.5 * F.mse_loss(current_q_values[0], replay_data.old_values1) +
-                             F.mse_loss(current_q_values[1], replay_data.old_values2)) * self.tf_lambda
-            critic_loss = critic_loss + suft_ope_term
+            if self.tf_lambda > 0:
+                suft_ope_term = (0.5 * F.mse_loss(current_q_values[0], replay_data.old_values1) +
+                                 F.mse_loss(current_q_values[1], replay_data.old_values2)) * self.tf_lambda
+                critic_loss = critic_loss + suft_ope_term
             # SUFT CHANGE until here
             assert isinstance(critic_loss, th.Tensor)  # for type checker
             critic_losses.append(critic_loss.item())  # type: ignore[union-attr]
