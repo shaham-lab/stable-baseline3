@@ -23,7 +23,7 @@ fi
 SB3_DIR=/home/dsi/fiskustal/talfiskus/stable-baselines3-new/stable-baseline3
 PYTHON=~/miniconda3/envs/stable-baselines3/bin/python
 
-DEVICE="cuda:0"
+DEVICE="cpu"
 TF_LAMBDA=0
 AGENT_NAME="SAC"
 RESULTS_DIR=$SB3_DIR/results/$AGENT_NAME
