@@ -26,6 +26,11 @@ keys/
 /env
 /venv
 
+# Results
+/results
+
+# slurm run output
+slurm*.out
 
 *.sublime-project
 *.sublime-workspace
