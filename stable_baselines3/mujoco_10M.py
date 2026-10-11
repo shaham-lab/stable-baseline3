@@ -36,7 +36,7 @@ if __name__ == "__main__":
     print("buffer_size", buffer_size)
     env = gym.make(gym_env_name, render_mode=None)
     eval_env = gym.make(gym_env_name, render_mode=None)
-    eval_callback = EvalCallback(eval_env, eval_freq=100000, verbose=1, n_eval_episodes=100)
+    eval_callback = EvalCallback(eval_env, eval_freq=100000, verbose=1, n_eval_episodes=100, deterministic=False)
 
     if agent_name == 'DDPG':
         model = DDPG('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size)
