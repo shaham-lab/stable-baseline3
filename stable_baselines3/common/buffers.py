@@ -997,3 +997,121 @@ class NStepReplayBuffer(ReplayBuffer):
             rewards=self.to_torch(n_step_returns),
             discounts=self.to_torch(target_q_discounts),
         )
+
+
+class ShortLongTermReplayBuffer(ReplayBuffer):
+    """
+    Double replay buffer made of a short term memory and a long term memory.
+
+    Every new transition is added to the short term buffer (this buffer, of size ``short_term_buffer_size``).
+    Once the short term buffer is full, every new transition pops out the oldest one
+    (as in a standard replay buffer), and the popped transition is added to the
+    long term buffer (of size ``long_term_buffer_size``), which is itself a standard replay buffer:
+    once full, its oldest transition is discarded.
+
+    :param short_term_buffer_size: Max number of element in the short term buffer
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device: PyTorch device
+    :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: Not supported
+    :param handle_timeout_termination: Handle timeout termination (due to timelimit)
+        separately and treat the task as infinite horizon task.
+        https://github.com/DLR-RM/stable-baselines3/issues/284
+    :param long_term_buffer_size: Max number of element in the long term buffer
+    :param sampling_fraction: Fraction of each batch taken from the short term buffer
+        (the rest is taken from the long term buffer), see ``sample_short_and_long()``
+    """
+
+    def __init__(self,
+                 short_term_buffer_size: int,
+                 observation_space: spaces.Space,
+                 action_space: spaces.Space,
+                 device: Union[th.device, str] = "auto",
+                 n_envs: int = 1,
+                 optimize_memory_usage: bool = False,
+                 handle_timeout_termination: bool = True,
+                 is_dqn: bool = False,
+                 long_term_buffer_size: int = 1_000_000,
+                 sampling_fraction: float = 0.5,
+                 ):
+        super().__init__(short_term_buffer_size, observation_space, action_space, device, n_envs, optimize_memory_usage, handle_timeout_termination, is_dqn)
+        if self.optimize_memory_usage:
+            raise NotImplementedError("ShortLongTermReplayBuffer doesn't support optimize_memory_usage=True")
+
+        self.long_term_buffer = ReplayBuffer(
+            long_term_buffer_size,
+            observation_space,
+            action_space,
+            device,
+            n_envs,
+            optimize_memory_usage,
+            handle_timeout_termination,
+            is_dqn
+        )
+        self.sampling_fraction = sampling_fraction
+
+    def add(
+        self,
+        obs: np.ndarray,
+        next_obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        done: np.ndarray,
+        old_values_to_store,
+        infos: list[dict[str, Any]],
+    ) -> None:
+        if self.full:
+            # add oldest sample from the short replay buffer
+            self.long_term_buffer.add(*self._get_oldest())
+        # add the regular sample into the short term buffer
+        super().add(obs, next_obs, action, reward, done, old_values_to_store, infos)
+
+    def _get_oldest(self) -> tuple:
+        """
+        Pull the oldest sample of the short term buffer (the one at ``self.pos`` once the buffer is full),
+        in the format expected by ``add()``.
+        """
+        if self.is_dqn:
+            # DQN
+            old_values_to_store = th.as_tensor(self.old_values[self.pos])
+        else:
+            # SAC
+            old_values_to_store = (th.as_tensor(self.old_values1[self.pos]), th.as_tensor(self.old_values2[self.pos]))
+        infos = [{"TimeLimit.truncated": bool(timeout)} for timeout in self.timeouts[self.pos]]
+        return (
+            self.observations[self.pos],
+            self.next_observations[self.pos],
+            self.actions[self.pos],
+            self.rewards[self.pos],
+            self.dones[self.pos],
+            old_values_to_store,
+            infos,
+        )
+
+    def reset(self) -> None:
+        super().reset()
+        self.long_term_buffer.reset()
+
+    def sample_short_and_long(
+        self, batch_size: int, env: Optional[VecNormalize] = None
+    ) -> tuple[Optional[ReplayBufferSamples], Optional[ReplayBufferSamples]]:
+        """
+        Sample elements from the short term and the long term buffers, according to a given ratio.
+        As long as the long term buffer does not have enough samples,
+        the whole batch is taken from the short term buffer.
+
+        :param batch_size: Number of element to sample (short term + long term)
+        :param env: associated gym VecEnv
+            to normalize the observations/rewards when sampling
+        :return: (short term samples, long term samples), one of them is ``None``
+            when nothing is taken from the corresponding buffer
+        """
+        short_term_batch_size = round(batch_size * self.sampling_fraction)
+        long_term_batch_size = batch_size - short_term_batch_size
+        if not (self.long_term_buffer.pos >= long_term_batch_size or self.long_term_buffer.full):
+            # Not enough samples in the long term buffer yet: take everything from the short term buffer
+            short_term_batch_size, long_term_batch_size = batch_size, 0
+        short_term_samples = self.sample(short_term_batch_size, env) if short_term_batch_size > 0 else None
+        long_term_samples = self.long_term_buffer.sample(long_term_batch_size, env) if long_term_batch_size > 0 else None
+        return short_term_samples, long_term_samples
