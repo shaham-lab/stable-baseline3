@@ -1,20 +1,14 @@
-import os
 import sys
 
-import torch
 
 sys.path.append("/home/dsi/fiskustal/talfiskus/stable-baselines3/")
 
 import gymnasium as gym
-import matplotlib.pyplot as plt
-
-from stable_baselines3.common import results_plotter, vec_env
-from stable_baselines3.common.logger import configure
-from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.results_plotter import plot_results
-from stable_baselines3.common.vec_env import VecFrameStack, VecVideoRecorder
-from stable_baselines3 import A2C, PPO, DQN, SAC, TD3, DDPG
+from stable_baselines3 import SAC, TD3, DDPG
 from stable_baselines3.common.callbacks import EvalCallback
+from stable_baselines3.common.noise import NormalActionNoise
+
+import numpy as np
 
 import time
 from datetime import timedelta
@@ -47,12 +41,22 @@ if __name__ == "__main__":
     eval_env = gym.make(gym_env_name, render_mode=None)
     eval_callback = EvalCallback(eval_env, eval_freq=100000, verbose=1, n_eval_episodes=100, deterministic=False)
 
+    # RL Baselines3 Zoo hyperparameters for the MuJoCo envs
+    # https://github.com/DLR-RM/rl-baselines3-zoo/tree/master/hyperparams
+    n_actions = env.action_space.shape[0]
+    td3_ddpg_kwargs = dict(
+        learning_starts=10000,
+        action_noise=NormalActionNoise(mean=np.zeros(n_actions), sigma=0.1 * np.ones(n_actions)),
+    )
+    sac_kwargs = dict(learning_starts=10000)
+
     if agent_name == 'DDPG':
-        model = DDPG('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size)
+        model = DDPG('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size, **td3_ddpg_kwargs)
     elif agent_name == 'TD3':
-        model = TD3('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size)
+        model = TD3('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size, **td3_ddpg_kwargs)
     elif agent_name == 'SAC':
-        model = SAC('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size, tf_lambda=tf_lambda)
+        model = SAC('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size, tf_lambda=tf_lambda,
+                    **sac_kwargs)
     else:
         print("ERROR - no valid agent")
     # Set new logger
