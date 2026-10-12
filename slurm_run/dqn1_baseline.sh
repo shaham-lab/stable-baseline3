@@ -4,8 +4,6 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=64G
-#SBATCH --mail-user=fiskust@biu.ac.il
-#SBATCH --mail-type=END
 
 # Baseline: a single DQN1 run on one Atari game (1M buffer) on one CPU core
 # RAM: the 1M replay buffer takes ~57GB (observations + next observations), plus the process overhead
