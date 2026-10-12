@@ -69,21 +69,21 @@ if __name__ == "__main__":
     elif agent_name == 'DQNSL':
         short_buffer_size = int(sys.argv[8])
         print("short_buffer_size", short_buffer_size)
-        sampling_fraction = int(sys.argv[9])
+        sampling_fraction = float(sys.argv[9])
         print("sampling_fraction", sampling_fraction)
         model = DQNSL('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
                       long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
     elif agent_name == 'DQN1SL':
         short_buffer_size = int(sys.argv[8])
         print("short_buffer_size", short_buffer_size)
-        sampling_fraction = int(sys.argv[9])
+        sampling_fraction = float(sys.argv[9])
         print("sampling_fraction", sampling_fraction)
         model = DQN1SL('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
                       long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
     elif agent_name == 'DDQNSL':
         short_buffer_size = int(sys.argv[8])
         print("short_buffer_size", short_buffer_size)
-        sampling_fraction = int(sys.argv[9])
+        sampling_fraction = float(sys.argv[9])
         print("sampling_fraction", sampling_fraction)
         model = DDQNSL('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
                       long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
