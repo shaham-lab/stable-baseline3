@@ -2,18 +2,18 @@ from typing import Any, Optional, TypeVar, Union
 
 import torch as th
 
-from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.td3.policies import TD3Policy
-from stable_baselines3.td3.td3 import TD3
+from stable_baselines3.td3.td3_sl import TD3SL
 
-SelfDDPG = TypeVar("SelfDDPG", bound="DDPG")
+SelfDDPGSL = TypeVar("SelfDDPGSL", bound="DDPGSL")
 
 
-class DDPG(TD3):
+class DDPGSL(TD3SL):
     """
-    Deep Deterministic Policy Gradient (DDPG).
+    Deep Deterministic Policy Gradient (DDPG) with a short term and a long term replay buffer
+    (see ``ShortLongTermReplayBuffer``)
 
     Deterministic Policy Gradient: https://proceedings.mlr.press/v32/silver14.pdf
     DDPG Paper: https://arxiv.org/abs/1509.02971
@@ -26,7 +26,10 @@ class DDPG(TD3):
     :param learning_rate: learning rate for adam optimizer,
         the same learning rate will be used for all networks (Q-Values, Actor and Value function)
         it can be a function of the current progress remaining (from 1 to 0)
-    :param buffer_size: size of the replay buffer
+    :param buffer_size: size of the short term replay buffer
+    :param long_term_buffer_size: size of the long term replay buffer
+    :param sampling_fraction: fraction of each minibatch taken from the short term replay buffer
+        (the rest is taken from the long term replay buffer, once it has enough samples)
     :param learning_starts: how many steps of the model to collect transitions for before learning starts
     :param batch_size: Minibatch size for each gradient update
     :param tau: the soft update coefficient ("Polyak update", between 0 and 1)
@@ -38,16 +41,7 @@ class DDPG(TD3):
         during the rollout.
     :param action_noise: the action noise type (None by default), this can help
         for hard exploration problem. Cf common.noise for the different action noise type.
-    :param replay_buffer_class: Replay buffer class to use (for instance ``HerReplayBuffer``).
-        If ``None``, it will be automatically selected.
-    :param replay_buffer_kwargs: Keyword arguments to pass to the replay buffer on creation.
-    :param optimize_memory_usage: Enable a memory efficient variant of the replay buffer
-        at a cost of more complexity.
-        See https://github.com/DLR-RM/stable-baselines3/issues/37#issuecomment-637501195
-    :param n_steps: When n_step > 1, uses n-step return (with the NStepReplayBuffer) when updating the Q-value network.
-        Note: it is only used when ``replay_buffer_class`` is ``None``, and is not supported for Dict
-        observation spaces yet. When passing a custom ``replay_buffer_class``, configure it directly
-        with ``replay_buffer_kwargs={"n_steps": ..., "gamma": ...}`` instead.
+    :param replay_buffer_kwargs: Additional keyword arguments to pass to the replay buffer on creation.
     :param policy_kwargs: additional arguments to be passed to the policy on creation. See :ref:`ddpg_policies`
     :param verbose: Verbosity level: 0 for no output, 1 for info messages (such as device or wrappers used), 2 for
         debug messages
@@ -62,7 +56,9 @@ class DDPG(TD3):
         policy: Union[str, type[TD3Policy]],
         env: Union[GymEnv, str],
         learning_rate: Union[float, Schedule] = 1e-3,
-        buffer_size: int = 1_000_000,  # 1e6
+        buffer_size: int = 4000,  # short buffer 4K
+        long_term_buffer_size: int = 1_000_000,  # 1e6
+        sampling_fraction: float = 0.5,
         learning_starts: int = 100,
         batch_size: int = 256,
         tau: float = 0.005,
@@ -70,10 +66,7 @@ class DDPG(TD3):
         train_freq: Union[int, tuple[int, str]] = 1,
         gradient_steps: int = 1,
         action_noise: Optional[ActionNoise] = None,
-        replay_buffer_class: Optional[type[ReplayBuffer]] = None,
         replay_buffer_kwargs: Optional[dict[str, Any]] = None,
-        optimize_memory_usage: bool = False,
-        n_steps: int = 1,
         tensorboard_log: Optional[str] = None,
         policy_kwargs: Optional[dict[str, Any]] = None,
         verbose: int = 0,
@@ -87,6 +80,8 @@ class DDPG(TD3):
             env=env,
             learning_rate=learning_rate,
             buffer_size=buffer_size,
+            long_term_buffer_size=long_term_buffer_size,
+            sampling_fraction=sampling_fraction,
             learning_starts=learning_starts,
             batch_size=batch_size,
             tau=tau,
@@ -94,10 +89,7 @@ class DDPG(TD3):
             train_freq=train_freq,
             gradient_steps=gradient_steps,
             action_noise=action_noise,
-            replay_buffer_class=replay_buffer_class,
             replay_buffer_kwargs=replay_buffer_kwargs,
-            optimize_memory_usage=optimize_memory_usage,
-            n_steps=n_steps,
             policy_kwargs=policy_kwargs,
             tensorboard_log=tensorboard_log,
             verbose=verbose,
@@ -120,14 +112,14 @@ class DDPG(TD3):
             self._setup_model()
 
     def learn(
-        self: SelfDDPG,
+        self: SelfDDPGSL,
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 4,
-        tb_log_name: str = "DDPG",
+        tb_log_name: str = "DDPGSL",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
-    ) -> SelfDDPG:
+    ) -> SelfDDPGSL:
         return super().learn(
             total_timesteps=total_timesteps,
             callback=callback,

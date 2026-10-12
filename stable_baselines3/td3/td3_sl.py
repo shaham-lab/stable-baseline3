@@ -5,20 +5,21 @@ import torch as th
 from gymnasium import spaces
 from torch.nn import functional as F
 
-from stable_baselines3.common.buffers import ReplayBuffer
+from stable_baselines3.common.buffers import ShortLongTermReplayBuffer
 from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.policies import BasePolicy, ContinuousCritic
-from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
+from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, ReplayBufferSamples, Schedule
 from stable_baselines3.common.utils import get_parameters_by_name, polyak_update
 from stable_baselines3.td3.policies import Actor, CnnPolicy, MlpPolicy, MultiInputPolicy, TD3Policy
 
-SelfTD3 = TypeVar("SelfTD3", bound="TD3")
+SelfTD3SL = TypeVar("SelfTD3SL", bound="TD3SL")
 
 
-class TD3(OffPolicyAlgorithm):
+class TD3SL(OffPolicyAlgorithm):
     """
-    Twin Delayed DDPG (TD3)
+    Twin Delayed DDPG (TD3) with a short term and a long term replay buffer
+    (see ``ShortLongTermReplayBuffer``)
     Addressing Function Approximation Error in Actor-Critic Methods.
 
     Original implementation: https://github.com/sfujim/TD3
@@ -30,7 +31,10 @@ class TD3(OffPolicyAlgorithm):
     :param learning_rate: learning rate for adam optimizer,
         the same learning rate will be used for all networks (Q-Values, Actor and Value function)
         it can be a function of the current progress remaining (from 1 to 0)
-    :param buffer_size: size of the replay buffer
+    :param buffer_size: size of the short term replay buffer
+    :param long_term_buffer_size: size of the long term replay buffer
+    :param sampling_fraction: fraction of each minibatch taken from the short term replay buffer
+        (the rest is taken from the long term replay buffer, once it has enough samples)
     :param learning_starts: how many steps of the model to collect transitions for before learning starts
     :param batch_size: Minibatch size for each gradient update
     :param tau: the soft update coefficient ("Polyak update", between 0 and 1)
@@ -42,16 +46,7 @@ class TD3(OffPolicyAlgorithm):
         during the rollout.
     :param action_noise: the action noise type (None by default), this can help
         for hard exploration problem. Cf common.noise for the different action noise type.
-    :param replay_buffer_class: Replay buffer class to use (for instance ``HerReplayBuffer``).
-        If ``None``, it will be automatically selected.
-    :param replay_buffer_kwargs: Keyword arguments to pass to the replay buffer on creation.
-    :param optimize_memory_usage: Enable a memory efficient variant of the replay buffer
-        at a cost of more complexity.
-        See https://github.com/DLR-RM/stable-baselines3/issues/37#issuecomment-637501195
-    :param n_steps: When n_step > 1, uses n-step return (with the NStepReplayBuffer) when updating the Q-value network.
-        Note: it is only used when ``replay_buffer_class`` is ``None``, and is not supported for Dict
-        observation spaces yet. When passing a custom ``replay_buffer_class``, configure it directly
-        with ``replay_buffer_kwargs={"n_steps": ..., "gamma": ...}`` instead.
+    :param replay_buffer_kwargs: Additional keyword arguments to pass to the replay buffer on creation.
     :param policy_delay: Policy and target networks will only be updated once every policy_delay steps
         per training steps. The Q values will be updated policy_delay more often (update every training step).
     :param target_policy_noise: Standard deviation of Gaussian noise added to target policy
@@ -85,7 +80,9 @@ class TD3(OffPolicyAlgorithm):
         policy: Union[str, type[TD3Policy]],
         env: Union[GymEnv, str],
         learning_rate: Union[float, Schedule] = 1e-3,
-        buffer_size: int = 1_000_000,  # 1e6
+        buffer_size: int = 4000,  # short buffer 4K
+        long_term_buffer_size: int = 1_000_000,  # 1e6
+        sampling_fraction: float = 0.5,
         learning_starts: int = 100,
         batch_size: int = 256,
         tau: float = 0.005,
@@ -93,10 +90,7 @@ class TD3(OffPolicyAlgorithm):
         train_freq: Union[int, tuple[int, str]] = 1,
         gradient_steps: int = 1,
         action_noise: Optional[ActionNoise] = None,
-        replay_buffer_class: Optional[type[ReplayBuffer]] = None,
         replay_buffer_kwargs: Optional[dict[str, Any]] = None,
-        optimize_memory_usage: bool = False,
-        n_steps: int = 1,
         policy_delay: int = 2,
         target_policy_noise: float = 0.2,
         target_noise_clip: float = 0.5,
@@ -107,7 +101,14 @@ class TD3(OffPolicyAlgorithm):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
+        tf_lambda: float = 0.0  # SUFT CHANGE
     ):
+        # Short term and long term replay buffer, `buffer_size` is the size of the short term one
+        replay_buffer_kwargs = {
+            **(replay_buffer_kwargs or {}),
+            "long_term_buffer_size": long_term_buffer_size,
+            "sampling_fraction": sampling_fraction,
+        }
         super().__init__(
             policy,
             env,
@@ -120,10 +121,8 @@ class TD3(OffPolicyAlgorithm):
             train_freq,
             gradient_steps,
             action_noise=action_noise,
-            replay_buffer_class=replay_buffer_class,
+            replay_buffer_class=ShortLongTermReplayBuffer,
             replay_buffer_kwargs=replay_buffer_kwargs,
-            optimize_memory_usage=optimize_memory_usage,
-            n_steps=n_steps,
             policy_kwargs=policy_kwargs,
             stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
@@ -138,6 +137,7 @@ class TD3(OffPolicyAlgorithm):
         self.policy_delay = policy_delay
         self.target_noise_clip = target_noise_clip
         self.target_policy_noise = target_policy_noise
+        self.tf_lambda = tf_lambda  # SUFT CHANGE
 
         if _init_setup_model:
             self._setup_model()
@@ -168,26 +168,10 @@ class TD3(OffPolicyAlgorithm):
         for _ in range(gradient_steps):
             self._n_updates += 1
             # Sample replay buffer
-            replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
-            # For n-step replay, discount factor is gamma**n_steps (when no early termination)
-            discounts = replay_data.discounts if replay_data.discounts is not None else self.gamma
-
-            with th.no_grad():
-                # Select action according to policy and add clipped noise
-                noise = replay_data.actions.clone().data.normal_(0, self.target_policy_noise)
-                noise = noise.clamp(-self.target_noise_clip, self.target_noise_clip)
-                next_actions = (self.actor_target(replay_data.next_observations) + noise).clamp(-1, 1)
-
-                # Compute the next Q-values: min over all critics targets
-                next_q_values = th.cat(self.critic_target(replay_data.next_observations, next_actions), dim=1)
-                next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
-                target_q_values = replay_data.rewards + (1 - replay_data.dones) * discounts * next_q_values
-
-            # Get current Q-values estimates for each critic network
-            current_q_values = self.critic(replay_data.observations, replay_data.actions)
-
-            # Compute critic loss
-            critic_loss = sum(F.mse_loss(current_q, target_q_values) for current_q in current_q_values)
+            short_replay_data, long_replay_data = self.replay_buffer.sample_short_and_long(batch_size, env=self._vec_normalize_env)
+            short_replay_loss_sum = self.calculate_critic_loss(short_replay_data, True)
+            long_replay_loss_sum = self.calculate_critic_loss(long_replay_data, False)
+            critic_loss = (short_replay_loss_sum + long_replay_loss_sum) / batch_size
             assert isinstance(critic_loss, th.Tensor)
             critic_losses.append(critic_loss.item())
 
@@ -198,8 +182,12 @@ class TD3(OffPolicyAlgorithm):
 
             # Delayed policy updates
             if self._n_updates % self.policy_delay == 0:
+                # The actor is trained on the whole batch (short term + long term samples)
+                observations = th.cat(
+                    [data.observations for data in (short_replay_data, long_replay_data) if data is not None], dim=0
+                )
                 # Compute actor loss
-                actor_loss = -self.critic.q1_forward(replay_data.observations, self.actor(replay_data.observations)).mean()
+                actor_loss = -self.critic.q1_forward(observations, self.actor(observations)).mean()
                 actor_losses.append(actor_loss.item())
 
                 # Optimize the actor
@@ -218,15 +206,56 @@ class TD3(OffPolicyAlgorithm):
             self.logger.record("train/actor_loss", np.mean(actor_losses))
         self.logger.record("train/critic_loss", np.mean(critic_losses))
 
+    def calculate_critic_loss(
+        self, replay_data: Optional[ReplayBufferSamples], is_short: bool
+    ) -> Union[th.Tensor, float]:
+        """
+        Compute the critic loss summed over the samples (the caller divides by the batch size).
+
+        :param replay_data: Samples from one of the two buffers (``None`` if nothing was sampled from it)
+        :param is_short: Whether the samples come from the short term buffer,
+            the SUFT term is only added for those
+        :return: Sum over the samples of the TD loss (plus the SUFT term scaled by ``tf_lambda``
+            for the short term samples), ``0.0`` if nothing was sampled
+        """
+        if replay_data is None:
+            return 0.0
+        with th.no_grad():
+            # Select action according to policy and add clipped noise
+            noise = replay_data.actions.clone().data.normal_(0, self.target_policy_noise)
+            noise = noise.clamp(-self.target_noise_clip, self.target_noise_clip)
+            next_actions = (self.actor_target(replay_data.next_observations) + noise).clamp(-1, 1)
+
+            # Compute the next Q-values: min over all critics targets
+            next_q_values = th.cat(self.critic_target(replay_data.next_observations, next_actions), dim=1)
+            next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
+            target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
+
+        # Get current Q-values estimates for each critic network
+        current_q_values = self.critic(replay_data.observations, replay_data.actions)
+
+        # Compute critic loss
+        # SUFT CHANGE
+        critic_loss = sum(F.mse_loss(current_q, target_q_values, reduction='sum') for current_q in current_q_values)
+        # SUFT OPE term
+        if is_short and self.tf_lambda > 0:
+            # The buffer stores the old values of the first and the last critic
+            suft_ope_term = F.mse_loss(current_q_values[0], replay_data.old_values1, reduction='sum')
+            if len(current_q_values) > 1:
+                # TD3 (DDPG has a single critic)
+                suft_ope_term = suft_ope_term + F.mse_loss(current_q_values[-1], replay_data.old_values2, reduction='sum')
+            critic_loss = critic_loss + suft_ope_term * self.tf_lambda
+        return critic_loss
+
     def learn(
-        self: SelfTD3,
+        self: SelfTD3SL,
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 4,
-        tb_log_name: str = "TD3",
+        tb_log_name: str = "TD3SL",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
-    ) -> SelfTD3:
+    ) -> SelfTD3SL:
         return super().learn(
             total_timesteps=total_timesteps,
             callback=callback,
