@@ -107,6 +107,7 @@ class TD3(OffPolicyAlgorithm):
         seed: Optional[int] = None,
         device: Union[th.device, str] = "auto",
         _init_setup_model: bool = True,
+        tf_lambda: float = 0.0  # SUFT CHANGE
     ):
         super().__init__(
             policy,
@@ -138,6 +139,7 @@ class TD3(OffPolicyAlgorithm):
         self.policy_delay = policy_delay
         self.target_noise_clip = target_noise_clip
         self.target_policy_noise = target_policy_noise
+        self.tf_lambda = tf_lambda  # SUFT CHANGE
 
         if _init_setup_model:
             self._setup_model()
@@ -188,6 +190,15 @@ class TD3(OffPolicyAlgorithm):
 
             # Compute critic loss
             critic_loss = sum(F.mse_loss(current_q, target_q_values) for current_q in current_q_values)
+            # SUFT CHANGE
+            if self.tf_lambda > 0:
+                # The buffer stores the old values of the first and the last critic
+                suft_ope_term = F.mse_loss(current_q_values[0], replay_data.old_values1)
+                if len(current_q_values) > 1:
+                    # TD3 (DDPG has a single critic)
+                    suft_ope_term = suft_ope_term + F.mse_loss(current_q_values[-1], replay_data.old_values2)
+                critic_loss = critic_loss + suft_ope_term * self.tf_lambda
+            # SUFT CHANGE until here
             assert isinstance(critic_loss, th.Tensor)
             critic_losses.append(critic_loss.item())
 
