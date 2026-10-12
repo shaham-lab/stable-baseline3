@@ -6,6 +6,7 @@ sys.path.append("/home/dsi/fiskustal/talfiskus/stable-baselines3-new/stable-base
 import gymnasium as gym
 import numpy as np
 from stable_baselines3 import SAC, TD3, DDPG
+from stable_baselines3.ddpg.ddpg_sl import DDPGSL
 from stable_baselines3.common.callbacks import EvalCallback
 from stable_baselines3.common.noise import NormalActionNoise
 
@@ -15,6 +16,8 @@ from datetime import timedelta
 if __name__ == "__main__":
     # Usage:
     # python mujoco_cf.py <device> <tf_lambda> <agent_name> <timesteps> <run_number> <gym_env_name> <buffer_size>
+    # for the short-long agents (DDPGSL) <buffer_size> is the long term buffer size, followed by:
+    # <short_buffer_size> <sampling_fraction>
     # get the device from command line
     run_device = sys.argv[1]
     print("device", run_device)
@@ -56,6 +59,13 @@ if __name__ == "__main__":
     elif agent_name == 'SAC':
         model = SAC('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size, tf_lambda=tf_lambda,
                     **sac_kwargs)
+    elif agent_name == 'DDPGSL':
+        short_buffer_size = int(sys.argv[8])
+        print("short_buffer_size", short_buffer_size)
+        sampling_fraction = float(sys.argv[9])
+        print("sampling_fraction", sampling_fraction)
+        model = DDPGSL('MlpPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
+                       long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction, **td3_ddpg_kwargs)
     else:
         print("ERROR - no valid agent")
     # Set new logger
