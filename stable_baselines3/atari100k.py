@@ -1,8 +1,13 @@
 import os
 import sys
+
+from stable_baselines3.dqn.ddqn_sl import DDQNSL
+from stable_baselines3.dqn.dqn1_sl import DQN1SL
+from stable_baselines3.dqn.dqn_sl import DQNSL
+
 sys.path.append("/home/dsi/fiskustal/talfiskus/stable-baselines3-new/stable-baseline3/")
 
-from stable_baselines3 import PPO, DQN
+from stable_baselines3.dqn.dqn import DQN
 from stable_baselines3.common.env_util import make_atari_env
 from stable_baselines3.common.vec_env import VecFrameStack
 from stable_baselines3.dqn.ddqn import DDQN
@@ -61,6 +66,27 @@ if __name__ == "__main__":
         model = DDQN('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=buffer_size)
     elif agent_name == 'DQN1':
         model = DQN1('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=buffer_size)
+    elif agent_name == 'DQNSL':
+        short_buffer_size = int(sys.argv[8])
+        print("short_buffer_size", short_buffer_size)
+        sampling_fraction = int(sys.argv[9])
+        print("sampling_fraction", sampling_fraction)
+        model = DQNSL('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
+                      long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
+    elif agent_name == 'DQN1SL':
+        short_buffer_size = int(sys.argv[8])
+        print("short_buffer_size", short_buffer_size)
+        sampling_fraction = int(sys.argv[9])
+        print("sampling_fraction", sampling_fraction)
+        model = DQN1SL('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
+                      long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
+    elif agent_name == 'DDQNSL':
+        short_buffer_size = int(sys.argv[8])
+        print("short_buffer_size", short_buffer_size)
+        sampling_fraction = int(sys.argv[9])
+        print("sampling_fraction", sampling_fraction)
+        model = DDQNSL('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
+                      long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
 
     else:
         print("ERROR - no valid agent")

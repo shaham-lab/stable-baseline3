@@ -6,19 +6,20 @@ import torch as th
 from gymnasium import spaces
 from torch.nn import functional as F
 
-from stable_baselines3.common.buffers import ReplayBuffer
+from stable_baselines3.common.buffers import ShortLongTermReplayBuffer
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.policies import BasePolicy
-from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
+from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, ReplayBufferSamples, Schedule
 from stable_baselines3.common.utils import LinearSchedule, get_parameters_by_name, polyak_update
 from stable_baselines3.dqn.policies import CnnPolicy, DQNPolicy, MlpPolicy, MultiInputPolicy, QNetwork
 
-SelfDQN1 = TypeVar("SelfDQN1", bound="DQN1")
+SelfDQN1SL = TypeVar("SelfDQN1SL", bound="DQN1SL")
 
 
-class DQN1(OffPolicyAlgorithm):
+class DQN1SL(OffPolicyAlgorithm):
     """
-    Deep Q-Network (DQN- 2013)
+    Deep Q-Network (DQN- 2013) with a short term and a long term replay buffer
+    (see ``ShortLongTermReplayBuffer``)
 
     Paper: https://arxiv.org/abs/1312.5602, https://www.nature.com/articles/nature14236
     Default hyperparameters are taken from the Nature paper,
@@ -28,7 +29,10 @@ class DQN1(OffPolicyAlgorithm):
     :param env: The environment to learn from (if registered in Gym, can be str)
     :param learning_rate: The learning rate, it can be a function
         of the current progress remaining (from 1 to 0)
-    :param buffer_size: size of the replay buffer
+    :param buffer_size: size of the short term replay buffer
+    :param long_term_buffer_size: size of the long term replay buffer
+    :param sampling_fraction: fraction of each minibatch taken from the short term replay buffer
+        (the rest is taken from the long term replay buffer, once it has enough samples)
     :param learning_starts: how many steps of the model to collect transitions for before learning starts
     :param batch_size: Minibatch size for each gradient update
     :param tau: the soft update coefficient ("Polyak update", between 0 and 1) default 1 for hard update
@@ -38,18 +42,7 @@ class DQN1(OffPolicyAlgorithm):
     :param gradient_steps: How many gradient steps to do after each rollout (see ``train_freq``)
         Set to ``-1`` means to do as many gradient steps as steps done in the environment
         during the rollout.
-    :param replay_buffer_class: Replay buffer class to use (for instance ``HerReplayBuffer``).
-        If ``None``, it will be automatically selected.
-    :param replay_buffer_kwargs: Keyword arguments to pass to the replay buffer on creation.
-    :param optimize_memory_usage: Enable a memory efficient variant of the replay buffer
-        at a cost of more complexity.
-        See https://github.com/DLR-RM/stable-baselines3/issues/37#issuecomment-637501195
-    :param n_steps: When n_step > 1, uses n-step return (with the NStepReplayBuffer) when updating the Q-value network.
-        Note: it is only used when ``replay_buffer_class`` is ``None``, and is not supported for Dict
-        observation spaces yet. When passing a custom ``replay_buffer_class``, configure it directly
-        with ``replay_buffer_kwargs={"n_steps": ..., "gamma": ...}`` instead.
-    :param target_update_interval: update the target network every ``target_update_interval``
-        environment steps.
+    :param replay_buffer_kwargs: Additional keyword arguments to pass to the replay buffer on creation.
     :param exploration_fraction: fraction of entire training period over which the exploration rate is reduced
     :param exploration_initial_eps: initial value of random action probability
     :param exploration_final_eps: final value of random action probability
@@ -81,17 +74,16 @@ class DQN1(OffPolicyAlgorithm):
         policy: Union[str, type[DQNPolicy]],
         env: Union[GymEnv, str],
         learning_rate: Union[float, Schedule] = 1e-4,
-        buffer_size: int = 1_000_000,  # 1e6
+        buffer_size: int = 4000,  # short buffer 4K
+        long_term_buffer_size: int = 1_000_000,  # 1e6
+        sampling_fraction: float = 0.5,
         learning_starts: int = 100,
         batch_size: int = 32,
         tau: float = 1.0,
         gamma: float = 0.99,
         train_freq: Union[int, tuple[int, str]] = 4,
         gradient_steps: int = 1,
-        replay_buffer_class: Optional[type[ReplayBuffer]] = None,
         replay_buffer_kwargs: Optional[dict[str, Any]] = None,
-        optimize_memory_usage: bool = False,
-        n_steps: int = 1,
         exploration_fraction: float = 0.1,
         exploration_initial_eps: float = 1.0,
         exploration_final_eps: float = 0.05,
@@ -105,6 +97,12 @@ class DQN1(OffPolicyAlgorithm):
         _init_setup_model: bool = True,
         tf_lambda: float = 0.0  # SUFT CHANGE
     ) -> None:
+        # Short term and long term replay buffer, `buffer_size` is the size of the short term one
+        replay_buffer_kwargs = {
+            **(replay_buffer_kwargs or {}),
+            "long_term_buffer_size": long_term_buffer_size,
+            "sampling_fraction": sampling_fraction,
+        }
         super().__init__(
             policy,
             env,
@@ -117,10 +115,8 @@ class DQN1(OffPolicyAlgorithm):
             train_freq,
             gradient_steps,
             action_noise=None,  # No action noise
-            replay_buffer_class=replay_buffer_class,
+            replay_buffer_class=ShortLongTermReplayBuffer,
             replay_buffer_kwargs=replay_buffer_kwargs,
-            optimize_memory_usage=optimize_memory_usage,
-            n_steps=n_steps,
             policy_kwargs=policy_kwargs,
             stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
@@ -133,7 +129,9 @@ class DQN1(OffPolicyAlgorithm):
             is_dqn=True,
         )
         print("Loss", "MSE")
-        print("buffer size", buffer_size)
+        print("short term buffer size", buffer_size)
+        print("long term buffer size", long_term_buffer_size)
+        print("sampling fraction", sampling_fraction)
         print("TF lambda", tf_lambda)
         self.exploration_initial_eps = exploration_initial_eps
         self.exploration_final_eps = exploration_final_eps
@@ -178,29 +176,10 @@ class DQN1(OffPolicyAlgorithm):
         losses = []
         for _ in range(gradient_steps):
             # Sample replay buffer
-            replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
-            with th.no_grad():
-                # Compute the next Q-values using the current network
-                next_q_values = self.q_net(replay_data.next_observations)
-                # Follow greedy policy: use the one with the highest value
-                next_q_values, _ = next_q_values.max(dim=1)
-                # Avoid potential broadcast issue
-                next_q_values = next_q_values.reshape(-1, 1)
-                # 1-step TD target
-                target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
-
-            # Get current Q-values estimates
-            current_q_values = self.q_net(replay_data.observations)
-
-            # Retrieve the q-values for the actions from the replay buffer
-            current_q_values = th.gather(current_q_values, dim=1, index=replay_data.actions.long())
-            # Compute MSE loss
-            loss = F.mse_loss(current_q_values, target_q_values)
-            # SUFT CHANGE
-            if self.tf_lambda > 0:
-                suft_ope_term = F.mse_loss(current_q_values, replay_data.old_values) * self.tf_lambda
-                loss = loss + suft_ope_term
-            # SUFT CHANGE until here
+            short_replay_data, long_replay_data = self.replay_buffer.sample_short_and_long(batch_size, env=self._vec_normalize_env)
+            short_replay_loss_sum = self.calculate_loss(short_replay_data, True)
+            long_replay_loss_sum = self.calculate_loss(long_replay_data, False)
+            loss = (short_replay_loss_sum + long_replay_loss_sum)/batch_size
             losses.append(loss.item())
 
             # Optimize the policy
@@ -215,6 +194,45 @@ class DQN1(OffPolicyAlgorithm):
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/loss", np.mean(losses))
+
+    def calculate_loss(
+        self, replay_data: Optional[ReplayBufferSamples], is_short: bool
+    ) -> Union[th.Tensor, float]:
+        """
+        Compute the loss summed over the samples (the caller divides by the batch size).
+
+        :param replay_data: Samples from one of the two buffers (``None`` if nothing was sampled from it)
+        :param is_short: Whether the samples come from the short term buffer,
+            the SUFT term is only added for those
+        :return: Sum over the samples of the TD loss (plus the SUFT term scaled by ``tf_lambda``
+            for the short term samples), ``0.0`` if nothing was sampled
+        """
+        if replay_data is None:
+            return 0.0
+        with th.no_grad():
+            # Compute the next Q-values using the current network
+            next_q_values = self.q_net(replay_data.next_observations)
+            # Follow greedy policy: use the one with the highest value
+            next_q_values, _ = next_q_values.max(dim=1)
+            # Avoid potential broadcast issue
+            next_q_values = next_q_values.reshape(-1, 1)
+            # 1-step TD target
+            target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
+
+        # Get current Q-values estimates
+        current_q_values = self.q_net(replay_data.observations)
+
+        # Retrieve the q-values for the actions from the replay buffer
+        current_q_values = th.gather(current_q_values, dim=1, index=replay_data.actions.long())
+        # Compute MSE loss
+        loss = F.mse_loss(current_q_values, target_q_values, reduction='sum')
+        # SUFT CHANGE
+        if is_short and self.tf_lambda > 0:
+            old_q_values = th.gather(replay_data.old_values, dim=1, index=replay_data.actions.long())
+            suft_ope_term = F.mse_loss(current_q_values, old_q_values, reduction='sum') * self.tf_lambda
+            loss = loss + suft_ope_term
+        # SUFT CHANGE until here
+        return loss
 
     def predict(
         self,
@@ -247,14 +265,14 @@ class DQN1(OffPolicyAlgorithm):
         return action, state
 
     def learn(
-        self: SelfDQN1,
+        self: SelfDQN1SL,
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 4,
-        tb_log_name: str = "DQN",
+        tb_log_name: str = "DQN1SL",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
-    ) -> SelfDQN1:
+    ) -> SelfDQN1SL:
         return super().learn(
             total_timesteps=total_timesteps,
             callback=callback,

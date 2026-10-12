@@ -1,32 +1,34 @@
-import os
-import sys
-
-import numpy as np
+import ale_py
+import gymnasium as gym
 import torch
 
-from stable_baselines3.common.callbacks import EvalCallback
-from stable_baselines3.dqn.ddqn import DDQN
-from stable_baselines3.dqn.dqn1 import DQN1
 
-sys.path.append("/home/dsi/fiskustal/talfiskus/stable-baselines3/")
-
-from stable_baselines3 import PPO, DQN
+from stable_baselines3.dqn.dqn import DQN
 from stable_baselines3.common.env_util import make_atari_env
 from stable_baselines3.common.vec_env import VecFrameStack
 from stable_baselines3.dqn.ddqn import DDQN
+from stable_baselines3.dqn.ddqn_sl import DDQNSL
 from stable_baselines3.dqn.dqn1 import DQN1
+from stable_baselines3.dqn.dqn1_sl import DQN1SL
+from stable_baselines3.dqn.dqn_sl import DQNSL
 from stable_baselines3.common.callbacks import EvalCallback
 
 import time
 from datetime import timedelta
 
+# gymnasium >= 1.0 does not register the ALE environments automatically
+gym.register_envs(ale_py)
+
 if __name__ == "__main__":
-    agent_name = "DQN1" # TODO: change this
+    agent_name = "DQN" # TODO: change this
     buffer_size = 100000 # 100K
+    # DQNSL only: short term buffer size and fraction of each batch taken from it (buffer_size is the long term one)
+    short_term_buffer_size = 4000 # 4K
+    sampling_fraction = 0.5
     timesteps = 100000 # Atari 100K
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     #SUFT
-    tf_lambda = 0
+    tf_lambda = 1
     # v5: disable the built-in frame skip (AtariWrapper already skips 4 frames)
     # and let ALE alone handle sticky actions
     atari_env_kwargs = {"frameskip": 1, "repeat_action_probability": 0.25}
@@ -44,6 +46,15 @@ if __name__ == "__main__":
         model = DDQN('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=buffer_size)
     elif agent_name == 'DQN1':
         model = DQN1('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=buffer_size)
+    elif agent_name == 'DQNSL':
+        model = DQNSL('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
+                      long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
+    elif agent_name == 'DQN1SL':
+        model = DQN1SL('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
+                      long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
+    elif agent_name == 'DDQNSL':
+        model = DDQNSL('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
+                      long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
     else:
         print("ERROR - no valid agent")
 
