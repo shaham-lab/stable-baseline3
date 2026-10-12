@@ -1,7 +1,7 @@
 import sys
 
 
-sys.path.append("/home/dsi/fiskustal/talfiskus/stable-baselines3/")
+sys.path.append("/home/dsi/fiskustal/talfiskus/stable-baselines3-new/stable-baseline3/")
 
 import gymnasium as gym
 import numpy as np

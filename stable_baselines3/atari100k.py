@@ -1,6 +1,6 @@
 import os
 import sys
-sys.path.append("/home/dsi/fiskustal/talfiskus/stable-baselines3/")
+sys.path.append("/home/dsi/fiskustal/talfiskus/stable-baselines3-new/stable-baseline3/")
 
 from stable_baselines3 import PPO, DQN
 from stable_baselines3.common.env_util import make_atari_env
