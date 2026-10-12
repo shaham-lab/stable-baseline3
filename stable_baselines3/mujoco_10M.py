@@ -46,11 +46,6 @@ if __name__ == "__main__":
     td3_ddpg_kwargs = dict(
         learning_starts=10000,
         action_noise=NormalActionNoise(mean=np.zeros(n_actions), sigma=0.1 * np.ones(n_actions)),
-        train_freq=1,
-        gradient_steps=1,
-        learning_rate=1e-3,
-        batch_size=256,
-        policy_kwargs=dict(net_arch=[400, 300]),
     )
     sac_kwargs = dict(learning_starts=10000)
 
