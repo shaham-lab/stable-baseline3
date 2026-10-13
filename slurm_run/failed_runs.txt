@@ -1,0 +1,61 @@
+Runs that hit the 4h time limit before finishing
+Generated 2026-10-13 17:50 from Slurm accounting (last 10 days).
+None of the job scripts checkpoint or resume, so every attempt started from timestep 0.
+To rerun one: sbatch --job-name=<job_name> <script> <script_args>
+
+== 1. Cancelled on 2026-10-13 (29 jobs) ==
+Were pending in the queue after being requeued at the 4h limit once or twice.
+
+job_name                                   job_id    partition  script            script_args                    attempts  elapsed_per_attempt  last_attempt_end
+montezumarevenge_ddqn_base_r2              34153195  L4-4h      ddqn_baseline.sh  MontezumaRevenge 2             1         04:00:02             2026-10-13T04:22:00
+montezumarevenge_ddqn_base_r4              34153197  L4-4h      ddqn_baseline.sh  MontezumaRevenge 4             1         04:00:16             2026-10-13T04:34:30
+pitfall_ddqn_base_r2                       34153211  L4-4h      ddqn_baseline.sh  Pitfall 2                      1         04:00:01             2026-10-13T11:47:44
+pitfall_ddqn_base_r4                       34153213  L4-4h      ddqn_baseline.sh  Pitfall 4                      1         04:00:24             2026-10-13T12:14:14
+battlezone_dqn1_base_r2                    34154010  generic    dqn1_baseline.sh  BattleZone 2                   2         04:08:31/04:00:17    2026-10-12T21:11:06
+battlezone_dqn1_base_r3                    34154011  generic    dqn1_baseline.sh  BattleZone 3                   2         04:08:52/04:00:12    2026-10-12T21:25:07
+tennis_dqn1_base_r1                        34154285  generic    dqn1_baseline.sh  Tennis 1                       2         04:04:36/04:00:10    2026-10-12T21:29:07
+tennis_dqn1_base_r2                        34154286  generic    dqn1_baseline.sh  Tennis 2                       2         04:00:02/04:00:09    2026-10-12T21:30:37
+tennis_dqn1_base_r3                        34154287  generic    dqn1_baseline.sh  Tennis 3                       2         04:00:27/04:00:05    2026-10-12T21:37:37
+tennis_dqn1_base_r4                        34154288  generic    dqn1_baseline.sh  Tennis 4                       2         04:00:55/04:00:05    2026-10-12T21:38:37
+tutankham_dqn1_base_r1                     34154293  generic    dqn1_baseline.sh  Tutankham 1                    2         04:00:37/04:00:30    2026-10-12T21:41:08
+tutankham_dqn1_base_r2                     34154294  generic    dqn1_baseline.sh  Tutankham 2                    2         04:00:32/04:00:28    2026-10-12T21:57:08
+tutankham_dqn1_base_r3                     34154295  generic    dqn1_baseline.sh  Tutankham 3                    2         04:00:41/04:00:23    2026-10-12T22:09:38
+tutankham_dqn1_base_r4                     34154296  generic    dqn1_baseline.sh  Tutankham 4                    2         04:00:49/04:00:19    2026-10-12T22:17:38
+videopinball_dqn1_base_r2                  34154362  generic    dqn1_baseline.sh  VideoPinball 2                 1         04:10:16             2026-10-12T18:58:36
+videopinball_dqn1_base_r3                  34154363  generic    dqn1_baseline.sh  VideoPinball 3                 1         04:12:17             2026-10-12T19:08:23
+battlezone_dqn1_sl_s4000_l1_f0.5_r1        34919191  generic    dqn1_sl_suft.sh   BattleZone 1 4000 1 0.5        1         04:00:15             2026-10-13T02:48:25
+defender_dqn1_sl_s4000_l1_f0.5_r1          34919227  generic    dqn1_sl_suft.sh   Defender 1 4000 1 0.5          1         04:00:14             2026-10-13T07:23:02
+defender_dqn1_sl_s4000_l1_f0.5_r2          34919228  generic    dqn1_sl_suft.sh   Defender 2 4000 1 0.5          1         04:00:14             2026-10-13T07:23:32
+defender_dqn1_sl_s4000_l1_f0.5_r3          34919229  generic    dqn1_sl_suft.sh   Defender 3 4000 1 0.5          1         04:00:14             2026-10-13T07:24:32
+demonattack_dqn1_sl_s4000_l1_f0.5_r1       34919231  generic    dqn1_sl_suft.sh   DemonAttack 1 4000 1 0.5       1         04:00:13             2026-10-13T07:34:32
+demonattack_dqn1_sl_s4000_l1_f0.5_r2       34919232  generic    dqn1_sl_suft.sh   DemonAttack 2 4000 1 0.5       1         04:00:13             2026-10-13T07:37:32
+demonattack_dqn1_sl_s4000_l1_f0.5_r3       34919233  generic    dqn1_sl_suft.sh   DemonAttack 3 4000 1 0.5       1         04:00:13             2026-10-13T07:40:03
+demonattack_dqn1_sl_s4000_l1_f0.5_r4       34919234  generic    dqn1_sl_suft.sh   DemonAttack 4 4000 1 0.5       1         04:00:12             2026-10-13T07:44:02
+montezumarevenge_dqn1_sl_s4000_l1_f0.5_r1  34919343  generic    dqn1_sl_suft.sh   MontezumaRevenge 1 4000 1 0.5  1         04:00:12             2026-10-13T15:45:20
+montezumarevenge_dqn1_sl_s4000_l1_f0.5_r2  34919344  generic    dqn1_sl_suft.sh   MontezumaRevenge 2 4000 1 0.5  1         04:00:23             2026-10-13T16:02:22
+montezumarevenge_dqn1_sl_s4000_l1_f0.5_r3  34919345  generic    dqn1_sl_suft.sh   MontezumaRevenge 3 4000 1 0.5  1         04:00:13             2026-10-13T16:02:53
+montezumarevenge_dqn1_sl_s4000_l1_f0.5_r4  34919346  generic    dqn1_sl_suft.sh   MontezumaRevenge 4 4000 1 0.5  1         04:00:05             2026-10-13T16:02:53
+phoenix_dqn1_sl_s4000_l1_f0.5_r2           34919356  generic    dqn1_sl_suft.sh   Phoenix 2 4000 1 0.5           1         04:00:24             2026-10-13T17:43:30
+
+== 2. Timed out at 4h and not requeued (18 jobs) ==
+Already out of the queue; nothing to cancel.
+
+job_name                       job_id    partition  script            script_args         attempts  elapsed_per_attempt  last_attempt_end
+defender_dqn1_base_r1          34154045  generic    dqn1_baseline.sh  Defender 1          1         04:00:05             2026-10-11T21:49:14
+defender_dqn1_base_r2          34154046  generic    dqn1_baseline.sh  Defender 2          1         04:00:14             2026-10-11T21:57:47
+defender_dqn1_base_r3          34154047  generic    dqn1_baseline.sh  Defender 3          1         04:00:12             2026-10-11T22:04:20
+defender_dqn1_base_r4          34154048  generic    dqn1_baseline.sh  Defender 4          1         04:00:12             2026-10-11T22:04:20
+demonattack_dqn1_base_r1       34154049  generic    dqn1_baseline.sh  DemonAttack 1       1         04:00:09             2026-10-11T22:14:54
+demonattack_dqn1_base_r2       34154050  generic    dqn1_baseline.sh  DemonAttack 2       1         04:00:04             2026-10-11T22:20:25
+demonattack_dqn1_base_r3       34154051  generic    dqn1_baseline.sh  DemonAttack 3       1         04:00:06             2026-10-11T22:24:27
+demonattack_dqn1_base_r4       34154052  generic    dqn1_baseline.sh  DemonAttack 4       1         04:00:00             2026-10-11T22:33:31
+montezumarevenge_dqn1_base_r2  34154162  generic    dqn1_baseline.sh  MontezumaRevenge 2  1         04:00:10             2026-10-12T06:24:22
+montezumarevenge_dqn1_base_r3  34154163  generic    dqn1_baseline.sh  MontezumaRevenge 3  1         04:00:28             2026-10-12T06:53:05
+montezumarevenge_dqn1_base_r4  34154164  generic    dqn1_baseline.sh  MontezumaRevenge 4  1         04:00:27             2026-10-12T06:57:36
+pitfall_dqn1_base_r1           34154177  generic    dqn1_baseline.sh  Pitfall 1           1         04:00:22             2026-10-12T08:16:07
+pitfall_dqn1_base_r2           34154178  generic    dqn1_baseline.sh  Pitfall 2           1         04:00:23             2026-10-12T08:17:08
+pitfall_dqn1_base_r4           34154180  generic    dqn1_baseline.sh  Pitfall 4           1         04:00:11             2026-10-12T09:19:44
+solaris_dqn1_base_r1           34154269  generic    dqn1_baseline.sh  Solaris 1           1         04:00:07             2026-10-12T13:10:21
+solaris_dqn1_base_r2           34154270  generic    dqn1_baseline.sh  Solaris 2           1         04:00:04             2026-10-12T13:10:22
+solaris_dqn1_base_r3           34154271  generic    dqn1_baseline.sh  Solaris 3           1         04:00:02             2026-10-12T13:19:25
+solaris_dqn1_base_r4           34154272  generic    dqn1_baseline.sh  Solaris 4           1         04:00:02             2026-10-12T13:19:55
