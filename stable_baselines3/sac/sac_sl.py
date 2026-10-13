@@ -5,20 +5,21 @@ import torch as th
 from gymnasium import spaces
 from torch.nn import functional as F
 
-from stable_baselines3.common.buffers import ReplayBuffer
+from stable_baselines3.common.buffers import ShortLongTermReplayBuffer
 from stable_baselines3.common.noise import ActionNoise
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.policies import BasePolicy, ContinuousCritic
-from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule, ReplayBufferSamples
+from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, ReplayBufferSamples, Schedule
 from stable_baselines3.common.utils import get_parameters_by_name, polyak_update
 from stable_baselines3.sac.policies import Actor, CnnPolicy, MlpPolicy, MultiInputPolicy, SACPolicy
 
-SelfSAC = TypeVar("SelfSAC", bound="SAC")
+SelfSACSL = TypeVar("SelfSACSL", bound="SACSL")
 
 
-class SAC(OffPolicyAlgorithm):
+class SACSL(OffPolicyAlgorithm):
     """
-    Soft Actor-Critic (SAC)
+    Soft Actor-Critic (SAC) with a short term and a long term replay buffer
+    (see ``ShortLongTermReplayBuffer``)
     Off-Policy Maximum Entropy Deep Reinforcement Learning with a Stochastic Actor,
     This implementation borrows code from original implementation (https://github.com/haarnoja/sac)
     from OpenAI Spinning Up (https://github.com/openai/spinningup), from the softlearning repo
@@ -35,7 +36,10 @@ class SAC(OffPolicyAlgorithm):
     :param learning_rate: learning rate for adam optimizer,
         the same learning rate will be used for all networks (Q-Values, Actor and Value function)
         it can be a function of the current progress remaining (from 1 to 0)
-    :param buffer_size: size of the replay buffer
+    :param buffer_size: size of the short term replay buffer
+    :param long_term_buffer_size: size of the long term replay buffer
+    :param sampling_fraction: fraction of each minibatch taken from the short term replay buffer
+        (the rest is taken from the long term replay buffer, once it has enough samples)
     :param learning_starts: how many steps of the model to collect transitions for before learning starts
     :param batch_size: Minibatch size for each gradient update
     :param tau: the soft update coefficient ("Polyak update", between 0 and 1)
@@ -47,16 +51,7 @@ class SAC(OffPolicyAlgorithm):
         during the rollout.
     :param action_noise: the action noise type (None by default), this can help
         for hard exploration problem. Cf common.noise for the different action noise type.
-    :param replay_buffer_class: Replay buffer class to use (for instance ``HerReplayBuffer``).
-        If ``None``, it will be automatically selected.
-    :param replay_buffer_kwargs: Keyword arguments to pass to the replay buffer on creation.
-    :param optimize_memory_usage: Enable a memory efficient variant of the replay buffer
-        at a cost of more complexity.
-        See https://github.com/DLR-RM/stable-baselines3/issues/37#issuecomment-637501195
-    :param n_steps: When n_step > 1, uses n-step return (with the NStepReplayBuffer) when updating the Q-value network.
-        Note: it is only used when ``replay_buffer_class`` is ``None``, and is not supported for Dict
-        observation spaces yet. When passing a custom ``replay_buffer_class``, configure it directly
-        with ``replay_buffer_kwargs={"n_steps": ..., "gamma": ...}`` instead.
+    :param replay_buffer_kwargs: Additional keyword arguments to pass to the replay buffer on creation.
     :param ent_coef: Entropy regularization coefficient. (Equivalent to
         inverse of reward scale in the original SAC paper.)  Controlling exploration/exploitation trade-off.
         Set it to 'auto' to learn it automatically (and 'auto_0.1' for using 0.1 as initial value)
@@ -96,7 +91,9 @@ class SAC(OffPolicyAlgorithm):
         policy: Union[str, type[SACPolicy]],
         env: Union[GymEnv, str],
         learning_rate: Union[float, Schedule] = 3e-4,
-        buffer_size: int = 1_000_000,  # 1e6
+        buffer_size: int = 4000,  # short buffer 4K
+        long_term_buffer_size: int = 1_000_000,  # 1e6
+        sampling_fraction: float = 0.5,
         learning_starts: int = 100,
         batch_size: int = 256,
         tau: float = 0.005,
@@ -104,10 +101,7 @@ class SAC(OffPolicyAlgorithm):
         train_freq: Union[int, tuple[int, str]] = 1,
         gradient_steps: int = 1,
         action_noise: Optional[ActionNoise] = None,
-        replay_buffer_class: Optional[type[ReplayBuffer]] = None,
         replay_buffer_kwargs: Optional[dict[str, Any]] = None,
-        optimize_memory_usage: bool = False,
-        n_steps: int = 1,
         ent_coef: Union[str, float] = "auto",
         target_update_interval: int = 1,
         target_entropy: Union[str, float] = "auto",
@@ -123,6 +117,12 @@ class SAC(OffPolicyAlgorithm):
         _init_setup_model: bool = True,
         tf_lambda: float = 0.0  # SUFT CHANGE
     ):
+        # Short term and long term replay buffer, `buffer_size` is the size of the short term one
+        replay_buffer_kwargs = {
+            **(replay_buffer_kwargs or {}),
+            "long_term_buffer_size": long_term_buffer_size,
+            "sampling_fraction": sampling_fraction,
+        }
         super().__init__(
             policy,
             env,
@@ -135,10 +135,8 @@ class SAC(OffPolicyAlgorithm):
             train_freq,
             gradient_steps,
             action_noise,
-            replay_buffer_class=replay_buffer_class,
+            replay_buffer_class=ShortLongTermReplayBuffer,
             replay_buffer_kwargs=replay_buffer_kwargs,
-            optimize_memory_usage=optimize_memory_usage,
-            n_steps=n_steps,
             policy_kwargs=policy_kwargs,
             stats_window_size=stats_window_size,
             tensorboard_log=tensorboard_log,
@@ -204,13 +202,6 @@ class SAC(OffPolicyAlgorithm):
         self.critic = self.policy.critic
         self.critic_target = self.policy.critic_target
 
-    @staticmethod
-    def _concat_replay_samples(first: ReplayBufferSamples, second: ReplayBufferSamples) -> ReplayBufferSamples:
-        """
-        Concatenate two batches of replay samples along the batch dimension.
-        """
-        return ReplayBufferSamples(*[None if a is None else th.cat([a, b], dim=0) for a, b in zip(first, second)])
-
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
         # Switch to train mode (this affects batch norm / dropout)
         self.policy.set_training_mode(True)
@@ -227,16 +218,18 @@ class SAC(OffPolicyAlgorithm):
 
         for gradient_step in range(gradient_steps):
             # Sample replay buffer
-            replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)  # type: ignore[union-attr]
-            # For n-step replay, discount factor is gamma**n_steps (when no early termination)
-            discounts = replay_data.discounts if replay_data.discounts is not None else self.gamma
+            short_replay_data, long_replay_data = self.replay_buffer.sample_short_and_long(batch_size, env=self._vec_normalize_env)
+            # The actor and the entropy coefficient are trained on the whole batch (short term + long term samples)
+            observations = th.cat(
+                [data.observations for data in (short_replay_data, long_replay_data) if data is not None], dim=0
+            )
 
             # We need to sample because `log_std` may have changed between two gradient steps
             if self.use_sde:
                 self.actor.reset_noise()
 
             # Action by the current actor for the sampled state
-            actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
+            actions_pi, log_prob = self.actor.action_log_prob(observations)
             log_prob = log_prob.reshape(-1, 1)
 
             ent_coef_loss = None
@@ -260,29 +253,9 @@ class SAC(OffPolicyAlgorithm):
                 ent_coef_loss.backward()
                 self.ent_coef_optimizer.step()
 
-            with th.no_grad():
-                # Select action according to policy
-                next_actions, next_log_prob = self.actor.action_log_prob(replay_data.next_observations)
-                # Compute the next Q values: min over all critics targets
-                next_q_values = th.cat(self.critic_target(replay_data.next_observations, next_actions), dim=1)
-                next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
-                # add entropy term
-                next_q_values = next_q_values - ent_coef * next_log_prob.reshape(-1, 1)
-                # td error + entropy term
-                target_q_values = replay_data.rewards + (1 - replay_data.dones) * discounts * next_q_values
-
-            # Get current Q-values estimates for each critic network
-            # using action from the replay buffer
-            current_q_values = self.critic(replay_data.observations, replay_data.actions)
-
-            # Compute critic loss
-            critic_loss = 0.5 * sum(F.mse_loss(current_q, target_q_values) for current_q in current_q_values)
-            # SUFT CHANGE
-            if self.tf_lambda > 0:
-                suft_ope_term = (0.5 * F.mse_loss(current_q_values[0], replay_data.old_values1) +
-                                 F.mse_loss(current_q_values[1], replay_data.old_values2)) * self.tf_lambda
-                critic_loss = critic_loss + suft_ope_term
-            # SUFT CHANGE until here
+            short_replay_loss_sum = self.calculate_critic_loss(short_replay_data, True, ent_coef)
+            long_replay_loss_sum = self.calculate_critic_loss(long_replay_data, False, ent_coef)
+            critic_loss = (short_replay_loss_sum + long_replay_loss_sum) / batch_size
             assert isinstance(critic_loss, th.Tensor)  # for type checker
             critic_losses.append(critic_loss.item())  # type: ignore[union-attr]
 
@@ -294,7 +267,7 @@ class SAC(OffPolicyAlgorithm):
             # Compute actor loss
             # Alternative: actor_loss = th.mean(log_prob - qf1_pi)
             # Min over all critic networks
-            q_values_pi = th.cat(self.critic(replay_data.observations, actions_pi), dim=1)
+            q_values_pi = th.cat(self.critic(observations, actions_pi), dim=1)
             min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
             actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
             actor_losses.append(actor_loss.item())
@@ -319,15 +292,55 @@ class SAC(OffPolicyAlgorithm):
         if len(ent_coef_losses) > 0:
             self.logger.record("train/ent_coef_loss", np.mean(ent_coef_losses))
 
+    def calculate_critic_loss(
+        self, replay_data: Optional[ReplayBufferSamples], is_short: bool, ent_coef: th.Tensor
+    ) -> Union[th.Tensor, float]:
+        """
+        Compute the critic loss summed over the samples (the caller divides by the batch size).
+
+        :param replay_data: Samples from one of the two buffers (``None`` if nothing was sampled from it)
+        :param is_short: Whether the samples come from the short term buffer,
+            the SUFT term is only added for those
+        :param ent_coef: Current value of the entropy coefficient
+        :return: Sum over the samples of the TD loss (plus the SUFT term scaled by ``tf_lambda``
+            for the short term samples), ``0.0`` if nothing was sampled
+        """
+        if replay_data is None:
+            return 0.0
+        with th.no_grad():
+            # Select action according to policy
+            next_actions, next_log_prob = self.actor.action_log_prob(replay_data.next_observations)
+            # Compute the next Q values: min over all critics targets
+            next_q_values = th.cat(self.critic_target(replay_data.next_observations, next_actions), dim=1)
+            next_q_values, _ = th.min(next_q_values, dim=1, keepdim=True)
+            # add entropy term
+            next_q_values = next_q_values - ent_coef * next_log_prob.reshape(-1, 1)
+            # td error + entropy term
+            target_q_values = replay_data.rewards + (1 - replay_data.dones) * self.gamma * next_q_values
+
+        # Get current Q-values estimates for each critic network
+        # using action from the replay buffer
+        current_q_values = self.critic(replay_data.observations, replay_data.actions)
+
+        # Compute critic loss
+        # SUFT CHANGE
+        critic_loss = 0.5 * sum(F.mse_loss(current_q, target_q_values, reduction='sum') for current_q in current_q_values)
+        # SUFT OPE term
+        if is_short and self.tf_lambda > 0:
+            suft_ope_term = (0.5 * F.mse_loss(current_q_values[0], replay_data.old_values1, reduction='sum') +
+                             0.5 * F.mse_loss(current_q_values[1], replay_data.old_values2, reduction='sum')) * self.tf_lambda
+            critic_loss = critic_loss + suft_ope_term
+        return critic_loss
+
     def learn(
-        self: SelfSAC,
+        self: SelfSACSL,
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 4,
-        tb_log_name: str = "SAC",
+        tb_log_name: str = "SACSL",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
-    ) -> SelfSAC:
+    ) -> SelfSACSL:
         return super().learn(
             total_timesteps=total_timesteps,
             callback=callback,

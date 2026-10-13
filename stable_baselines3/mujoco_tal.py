@@ -51,9 +51,9 @@ if __name__ == "__main__":
     sac_kwargs = dict(learning_starts=10000)
 
     if agent_name == 'DDPG':
-        model = DDPG('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size, **td3_ddpg_kwargs)
+        model = DDPG('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size, tf_lambda=tf_lambda, **td3_ddpg_kwargs)
     elif agent_name == 'TD3':
-        model = TD3('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size, **td3_ddpg_kwargs)
+        model = TD3('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size, tf_lambda=tf_lambda, **td3_ddpg_kwargs)
     elif agent_name == 'SAC':
         model = SAC('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size, tf_lambda=tf_lambda,
                     **sac_kwargs)
