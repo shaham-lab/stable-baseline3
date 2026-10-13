@@ -12,6 +12,8 @@ from stable_baselines3.common.env_util import make_atari_env
 from stable_baselines3.common.vec_env import VecFrameStack
 from stable_baselines3.dqn.ddqn import DDQN
 from stable_baselines3.dqn.dqn1 import DQN1
+from stable_baselines3.dqn.dqn1_sl_suft_bound import DQN1SLSB
+from stable_baselines3.dqn.dqn1_suft_bound import DQN1SB
 from stable_baselines3.common.callbacks import EvalCallback
 
 import time
@@ -80,6 +82,23 @@ if __name__ == "__main__":
         print("sampling_fraction", sampling_fraction)
         model = DQN1SL('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
                       long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
+    elif agent_name == 'DQN1SB':
+        # keeps a copy of the weights per gradient update (too much memory with a big buffer)
+        track_behavior_distance = sys.argv[8].lower() in ("true", "1")
+        print("track_behavior_distance", track_behavior_distance)
+        model = DQN1SB('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=buffer_size,
+                       track_behavior_distance=track_behavior_distance)
+    elif agent_name == 'DQN1SLSB':
+        short_buffer_size = int(sys.argv[8])
+        print("short_buffer_size", short_buffer_size)
+        sampling_fraction = float(sys.argv[9])
+        print("sampling_fraction", sampling_fraction)
+        # keeps a copy of the weights per gradient update (too much memory with a big buffer)
+        track_behavior_distance = sys.argv[10].lower() in ("true", "1")
+        print("track_behavior_distance", track_behavior_distance)
+        model = DQN1SLSB('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
+                      long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction,
+                      track_behavior_distance=track_behavior_distance)
     elif agent_name == 'DDQNSL':
         short_buffer_size = int(sys.argv[8])
         print("short_buffer_size", short_buffer_size)
