@@ -84,10 +84,10 @@ class TD3SL(OffPolicyAlgorithm):
         long_term_buffer_size: int = 1_000_000,  # 1e6
         sampling_fraction: float = 0.5,
         learning_starts: int = 100,
-        batch_size: int = 256,
+        batch_size: int = 32,
         tau: float = 0.005,
         gamma: float = 0.99,
-        train_freq: Union[int, tuple[int, str]] = 1,
+        train_freq: Union[int, tuple[int, str]] = 4,
         gradient_steps: int = 1,
         action_noise: Optional[ActionNoise] = None,
         replay_buffer_kwargs: Optional[dict[str, Any]] = None,
@@ -133,6 +133,11 @@ class TD3SL(OffPolicyAlgorithm):
             supported_action_spaces=(spaces.Box,),
             support_multi_env=True,
         )
+        print("minibatch size", batch_size)
+        print("train freq", train_freq, "gradient steps", gradient_steps)
+        if isinstance(train_freq, int) and gradient_steps > 0:
+            # Number of gradient updates per action
+            print("replay ratio", gradient_steps / train_freq)
 
         self.policy_delay = policy_delay
         self.target_noise_clip = target_noise_clip

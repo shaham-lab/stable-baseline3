@@ -60,10 +60,10 @@ class DDPGSL(TD3SL):
         long_term_buffer_size: int = 1_000_000,  # 1e6
         sampling_fraction: float = 0.5,
         learning_starts: int = 100,
-        batch_size: int = 256,
+        batch_size: int = 32,
         tau: float = 0.005,
         gamma: float = 0.99,
-        train_freq: Union[int, tuple[int, str]] = 1,
+        train_freq: Union[int, tuple[int, str]] = 4,
         gradient_steps: int = 1,
         action_noise: Optional[ActionNoise] = None,
         replay_buffer_kwargs: Optional[dict[str, Any]] = None,

@@ -16,6 +16,7 @@ from datetime import timedelta
 if __name__ == "__main__":
     # Usage:
     # python mujoco_cf.py <device> <tf_lambda> <agent_name> <timesteps> <run_number> <gym_env_name> <buffer_size>
+    #                     <batch_size> <train_freq>
     # for the short-long agents (DDPGSL) <buffer_size> is the long term buffer size, followed by:
     # <short_buffer_size> <sampling_fraction>
     # get the device from command line
@@ -39,6 +40,13 @@ if __name__ == "__main__":
     # get the buffer size from command line
     buffer_size = int(sys.argv[7])
     print("buffer_size", buffer_size)
+    # get the minibatch size from command line
+    batch_size = int(sys.argv[8])
+    print("batch_size", batch_size)
+    # get the train frequency from command line: one gradient update every train_freq actions
+    # (replay ratio 1 / train_freq)
+    train_freq = int(sys.argv[9])
+    print("train_freq", train_freq)
     env = gym.make(gym_env_name, render_mode=None)
     eval_env = gym.make(gym_env_name, render_mode=None)
     eval_callback = EvalCallback(eval_env, eval_freq=100000, verbose=1, n_eval_episodes=100, deterministic=False)
@@ -48,9 +56,11 @@ if __name__ == "__main__":
     n_actions = env.action_space.shape[0]
     td3_ddpg_kwargs = dict(
         learning_starts=10000,
+        batch_size=batch_size,
+        train_freq=train_freq,
         action_noise=NormalActionNoise(mean=np.zeros(n_actions), sigma=0.1 * np.ones(n_actions)),
     )
-    sac_kwargs = dict(learning_starts=10000)
+    sac_kwargs = dict(learning_starts=10000, batch_size=batch_size, train_freq=train_freq)
 
     if agent_name == 'DDPG':
         model = DDPG('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size, **td3_ddpg_kwargs)
@@ -60,9 +70,9 @@ if __name__ == "__main__":
         model = SAC('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size, tf_lambda=tf_lambda,
                     **sac_kwargs)
     elif agent_name == 'DDPGSL':
-        short_buffer_size = int(sys.argv[8])
+        short_buffer_size = int(sys.argv[10])
         print("short_buffer_size", short_buffer_size)
-        sampling_fraction = float(sys.argv[9])
+        sampling_fraction = float(sys.argv[11])
         print("sampling_fraction", sampling_fraction)
         model = DDPGSL('MlpPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
                        long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction, **td3_ddpg_kwargs)

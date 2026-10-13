@@ -98,10 +98,10 @@ class SAC(OffPolicyAlgorithm):
         learning_rate: Union[float, Schedule] = 3e-4,
         buffer_size: int = 1_000_000,  # 1e6
         learning_starts: int = 100,
-        batch_size: int = 256,
+        batch_size: int = 32,
         tau: float = 0.005,
         gamma: float = 0.99,
-        train_freq: Union[int, tuple[int, str]] = 1,
+        train_freq: Union[int, tuple[int, str]] = 4,
         gradient_steps: int = 1,
         action_noise: Optional[ActionNoise] = None,
         replay_buffer_class: Optional[type[ReplayBuffer]] = None,
@@ -151,6 +151,11 @@ class SAC(OffPolicyAlgorithm):
             supported_action_spaces=(spaces.Box,),
             support_multi_env=True,
         )
+        print("minibatch size", batch_size)
+        print("train freq", train_freq, "gradient steps", gradient_steps)
+        if isinstance(train_freq, int) and gradient_steps > 0:
+            # Number of gradient updates per action
+            print("replay ratio", gradient_steps / train_freq)
 
         self.target_entropy = target_entropy
         self.log_ent_coef = None  # type: Optional[th.Tensor]

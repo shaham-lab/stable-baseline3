@@ -37,6 +37,12 @@ if __name__ == "__main__":
     print("gym_env_name", gym_env_name)
     buffer_size = 1000000
     print("buffer_size", buffer_size)
+    # minibatch size
+    batch_size = 32
+    print("batch_size", batch_size)
+    # one gradient update every train_freq actions (replay ratio 1 / train_freq)
+    train_freq = 4
+    print("train_freq", train_freq)
     env = gym.make(gym_env_name, render_mode=None)
     eval_env = gym.make(gym_env_name, render_mode=None)
     eval_callback = EvalCallback(eval_env, eval_freq=100000, verbose=1, n_eval_episodes=100, deterministic=False)
@@ -46,9 +52,11 @@ if __name__ == "__main__":
     n_actions = env.action_space.shape[0]
     td3_ddpg_kwargs = dict(
         learning_starts=10000,
+        batch_size=batch_size,
+        train_freq=train_freq,
         action_noise=NormalActionNoise(mean=np.zeros(n_actions), sigma=0.1 * np.ones(n_actions)),
     )
-    sac_kwargs = dict(learning_starts=10000)
+    sac_kwargs = dict(learning_starts=10000, batch_size=batch_size, train_freq=train_freq)
 
     if agent_name == 'DDPG':
         model = DDPG('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size, tf_lambda=tf_lambda, **td3_ddpg_kwargs)
