@@ -10,6 +10,8 @@ from stable_baselines3.dqn.ddqn import DDQN
 from stable_baselines3.dqn.ddqn_sl import DDQNSL
 from stable_baselines3.dqn.dqn1 import DQN1
 from stable_baselines3.dqn.dqn1_sl import DQN1SL
+from stable_baselines3.dqn.dqn1_sl_suft_bound import DQN1SLSB
+from stable_baselines3.dqn.dqn1_suft_bound import DQN1SB
 from stable_baselines3.dqn.dqn_sl import DQNSL
 from stable_baselines3.common.callbacks import EvalCallback
 
@@ -20,15 +22,17 @@ from datetime import timedelta
 gym.register_envs(ale_py)
 
 if __name__ == "__main__":
-    agent_name = "DQN" # TODO: change this
-    buffer_size = 100000 # 100K
+    agent_name = "DQN1SB" # TODO: change this
+    buffer_size = 100 # 1M
     # DQNSL only: short term buffer size and fraction of each batch taken from it (buffer_size is the long term one)
     short_term_buffer_size = 4000 # 4K
     sampling_fraction = 0.5
     timesteps = 100000 # Atari 100K
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     #SUFT
-    tf_lambda = 1
+    tf_lambda = 0
+    # DQN1SB / DQN1SLSB only: keeps a copy of the weights per gradient update (too much memory with a big buffer)
+    track_behavior_distance = False
     # v5: disable the built-in frame skip (AtariWrapper already skips 4 frames)
     # and let ALE alone handle sticky actions
     atari_env_kwargs = {"frameskip": 1, "repeat_action_probability": 0.25}
@@ -52,6 +56,13 @@ if __name__ == "__main__":
     elif agent_name == 'DQN1SL':
         model = DQN1SL('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
                       long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
+    elif agent_name == 'DQN1SB':
+        model = DQN1SB('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=buffer_size,
+                       track_behavior_distance=track_behavior_distance)
+    elif agent_name == 'DQN1SLSB':
+        model = DQN1SLSB('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
+                      long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction,
+                      track_behavior_distance=track_behavior_distance)
     elif agent_name == 'DDQNSL':
         model = DDQNSL('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
                       long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)

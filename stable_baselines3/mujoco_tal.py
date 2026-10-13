@@ -21,10 +21,10 @@ if __name__ == "__main__":
     run_device = "cpu"
     print("device", run_device)
     # get CF lambda from command line
-    tf_lambda = 0.0
+    tf_lambda = 1.0
     print("tf_lambda", tf_lambda)
     # get the agent
-    agent_name = "TD3"
+    agent_name = "DDPG"
     print("agent_name", agent_name)
     # get the timestep from command line
     timesteps = 1000000
@@ -45,7 +45,7 @@ if __name__ == "__main__":
     # https://github.com/DLR-RM/rl-baselines3-zoo/tree/master/hyperparams
     n_actions = env.action_space.shape[0]
     td3_ddpg_kwargs = dict(
-        learning_starts=10000,
+        # learning_starts=10000,
         action_noise=NormalActionNoise(mean=np.zeros(n_actions), sigma=0.1 * np.ones(n_actions)),
     )
     sac_kwargs = dict(learning_starts=10000)

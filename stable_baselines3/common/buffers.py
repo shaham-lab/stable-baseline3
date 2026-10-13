@@ -235,6 +235,11 @@ class ReplayBuffer(BaseBuffer):
             self.old_values1 = np.zeros((self.buffer_size, self.n_envs, 1), dtype=np.float32)
             self.old_values2 = np.zeros((self.buffer_size, self.n_envs, 1), dtype=np.float32)
         self.optimizer_steps = np.zeros((self.buffer_size, self.n_envs), dtype=np.int64)
+        # Number of optimizer steps done so far, set by the agent and stored with every new transition
+        self.current_optimizer_step: Union[int, np.ndarray] = 0
+        # Same for the number of actions taken so far (``num_timesteps`` of the agent)
+        self.timesteps = np.zeros((self.buffer_size, self.n_envs), dtype=np.int64)
+        self.current_timestep: Union[int, np.ndarray] = 0
         # Handle timeouts termination properly if needed
         # see https://github.com/DLR-RM/stable-baselines3/issues/284
         self.handle_timeout_termination = handle_timeout_termination
@@ -247,6 +252,7 @@ class ReplayBuffer(BaseBuffer):
                 + self.rewards.nbytes
                 + self.dones.nbytes
                 + self.optimizer_steps.nbytes
+                + self.timesteps.nbytes
             )
             if self.is_dqn:
                 # DQN
@@ -307,6 +313,8 @@ class ReplayBuffer(BaseBuffer):
             second_old = old_values_to_store[-1].detach().cpu().numpy()
             self.old_values1[self.pos] = np.array(first_old)
             self.old_values2[self.pos] = np.array(second_old)
+        self.optimizer_steps[self.pos] = self.current_optimizer_step
+        self.timesteps[self.pos] = self.current_timestep
 
         if self.handle_timeout_termination:
             self.timeouts[self.pos] = np.array([info.get("TimeLimit.truncated", False) for info in infos])
@@ -315,6 +323,12 @@ class ReplayBuffer(BaseBuffer):
         if self.pos == self.buffer_size:
             self.full = True
             self.pos = 0
+
+    def oldest_optimizer_step(self) -> int:
+        """
+        Number of optimizer steps done when the oldest transition still in the buffer was collected.
+        """
+        return int(self.optimizer_steps[self.pos if self.full else 0].min())
 
     def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
         """
@@ -367,7 +381,12 @@ class ReplayBuffer(BaseBuffer):
                 "old_values1": self.to_torch(self.old_values1[batch_inds, env_indices]),
                 "old_values2": self.to_torch(self.old_values2[batch_inds, env_indices]),
             }
-        return ReplayBufferSamples(*tuple(map(self.to_torch, data)), **old_values)
+        return ReplayBufferSamples(
+            *tuple(map(self.to_torch, data)),
+            **old_values,
+            optimizer_steps=self.to_torch(self.optimizer_steps[batch_inds, env_indices]),
+            timesteps=self.to_torch(self.timesteps[batch_inds, env_indices]),
+        )
 
     @staticmethod
     def _maybe_cast_dtype(dtype: Optional[np.typing.DTypeLike]) -> Optional[np.typing.DTypeLike]:
@@ -1062,10 +1081,18 @@ class ShortLongTermReplayBuffer(ReplayBuffer):
         infos: list[dict[str, Any]],
     ) -> None:
         if self.full:
-            # add oldest sample from the short replay buffer
+            # add oldest sample from the short replay buffer, keeping the optimizer step and timestep it was collected at
+            self.long_term_buffer.current_optimizer_step = self.optimizer_steps[self.pos].copy()
+            self.long_term_buffer.current_timestep = self.timesteps[self.pos].copy()
             self.long_term_buffer.add(*self._get_oldest())
         # add the regular sample into the short term buffer
         super().add(obs, next_obs, action, reward, done, old_values_to_store, infos)
+
+    def oldest_optimizer_step(self) -> int:
+        if self.long_term_buffer.size() > 0:
+            # The oldest transitions are the ones that moved to the long term buffer
+            return self.long_term_buffer.oldest_optimizer_step()
+        return super().oldest_optimizer_step()
 
     def _get_oldest(self) -> tuple:
         """

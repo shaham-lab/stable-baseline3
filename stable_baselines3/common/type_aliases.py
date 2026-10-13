@@ -59,6 +59,10 @@ class ReplayBufferSamples(NamedTuple):
     old_values2: Optional[th.Tensor] = None  # SAC
     # For n-step replay buffer
     discounts: Optional[th.Tensor] = None
+    # Number of optimizer steps done when each transition was collected
+    optimizer_steps: Optional[th.Tensor] = None
+    # Number of actions taken (``num_timesteps``) when each transition was collected
+    timesteps: Optional[th.Tensor] = None
 
 
 class DictReplayBufferSamples(NamedTuple):

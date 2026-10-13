@@ -13,10 +13,10 @@ from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, ReplayB
 from stable_baselines3.common.utils import LinearSchedule, get_parameters_by_name, polyak_update
 from stable_baselines3.dqn.policies import CnnPolicy, DQNPolicy, MlpPolicy, MultiInputPolicy, QNetwork
 
-SelfDQN1SL = TypeVar("SelfDQN1SL", bound="DQN1SL")
+SelfDQN1SLSB = TypeVar("SelfDQN1SLSB", bound="DQN1SLSB")
 
 
-class DQN1SL(OffPolicyAlgorithm):
+class DQN1SLSB(OffPolicyAlgorithm):
     """
     Deep Q-Network (DQN- 2013) with a short term and a long term replay buffer
     (see ``ShortLongTermReplayBuffer``)
@@ -59,6 +59,10 @@ class DQN1SL(OffPolicyAlgorithm):
     :param _init_setup_model: Whether or not to build the network at the creation of the instance
     :param cold_buffer_size: Number of experiences, collected before any gradient update, kept in the cold buffer.
         After every gradient update, their SUFT term is printed (0 to disable)
+    :param track_behavior_distance: Whether to print the distance between the current weights and the weights
+        of the behavior policy of each sample of the minibatch (the gradient updates, actions taken
+        and timesteps differences are always printed). It keeps a full copy of the weights
+        for every optimizer step still referenced by the replay buffer, which takes a lot of memory.
     """
 
     policy_aliases: ClassVar[dict[str, type[BasePolicy]]] = {
@@ -70,6 +74,14 @@ class DQN1SL(OffPolicyAlgorithm):
     exploration_schedule: Schedule
     q_net: QNetwork
     policy: DQNPolicy
+    # Statistics comparing the current Q-network with the behavior policy of the samples, see `_behavior_stats()`
+    behavior_stats_names: ClassVar[tuple[str, ...]] = (
+        "behavior distance mean",
+        "behavior distance^2 mean",
+        "gradient updates difference max",
+        "actions taken difference max",
+        "timesteps difference max",
+    )
 
     def __init__(
         self,
@@ -99,6 +111,7 @@ class DQN1SL(OffPolicyAlgorithm):
         _init_setup_model: bool = True,
         tf_lambda: float = 0.0,  # SUFT CHANGE
         cold_buffer_size: int = 100,
+        track_behavior_distance: bool = False,
     ) -> None:
         # Short term and long term replay buffer, `buffer_size` is the size of the short term one
         replay_buffer_kwargs = {
@@ -148,6 +161,10 @@ class DQN1SL(OffPolicyAlgorithm):
         self.cold_buffer: Optional[ReplayBufferSamples] = None
         # Weights of the Q-network before any gradient update (the ones the cold buffer was collected with)
         self.cold_q_net_params: Optional[th.Tensor] = None
+        # Weights of the behavior policies: the ones of the Q-network after each optimizer step
+        # that experiences still in the replay buffer were collected with (kept on the CPU)
+        self.track_behavior_distance = track_behavior_distance
+        self.behavior_q_net_params: dict[int, th.Tensor] = {}
 
         if _init_setup_model:
             self._setup_model()
@@ -185,7 +202,10 @@ class DQN1SL(OffPolicyAlgorithm):
             # No gradient update yet: keep the first experiences (all still in the short term buffer) in the cold buffer
             n_cold = min(self.cold_buffer_size, self.replay_buffer.size())  # type: ignore[union-attr]
             self.cold_buffer = self.replay_buffer._get_samples(np.arange(n_cold), env=self._vec_normalize_env)  # type: ignore[union-attr]
-            self.cold_q_net_params = th.cat([param.detach().flatten().clone() for param in self.q_net.parameters()])
+            self.cold_q_net_params = self._get_q_net_params()
+        if self.track_behavior_distance and self._n_updates == 0 and 0 not in self.behavior_q_net_params:
+            # Weights the experiences collected before any gradient update come from
+            self.behavior_q_net_params[0] = self._get_q_net_params().cpu()
 
         losses = []
         for gradient_step in range(gradient_steps):
@@ -195,6 +215,9 @@ class DQN1SL(OffPolicyAlgorithm):
             long_replay_loss_sum, long_suft_mean = self.calculate_loss(long_replay_data, False)
             loss = (short_replay_loss_sum + long_replay_loss_sum)/batch_size
             losses.append(loss.item())
+            # Compare with the behavior policies, with the same weights as the SUFT terms (before the update)
+            short_behavior_stats = self._behavior_stats(short_replay_data, self._n_updates + gradient_step + 1)
+            long_behavior_stats = self._behavior_stats(long_replay_data, self._n_updates + gradient_step + 1)
 
             # Optimize the policy
             self.policy.optimizer.zero_grad()
@@ -204,10 +227,17 @@ class DQN1SL(OffPolicyAlgorithm):
             self.policy.optimizer.step()
 
             if self.cold_buffer is not None:
-                self._print_cold_buffer_suft(self._n_updates + gradient_step + 1, short_suft_mean, long_suft_mean)
+                self._print_cold_buffer_suft(
+                    self._n_updates + gradient_step + 1,
+                    short_suft_mean,
+                    long_suft_mean,
+                    short_behavior_stats,
+                    long_behavior_stats,
+                )
 
         # Increase update counter
         self._n_updates += gradient_steps
+        self._update_behavior_q_net_params()
 
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/loss", np.mean(losses))
@@ -255,7 +285,72 @@ class DQN1SL(OffPolicyAlgorithm):
         # SUFT CHANGE until here
         return loss, suft_sum.item() / len(current_q_values)
 
-    def _print_cold_buffer_suft(self, n_updates: int, short_suft_mean: float, long_suft_mean: float) -> None:
+    def _get_q_net_params(self) -> th.Tensor:
+        """
+        Flattened copy of all the weights of the Q-network.
+        """
+        return th.cat([param.detach().flatten() for param in self.q_net.parameters()])
+
+    def _behavior_stats(self, replay_data: Optional[ReplayBufferSamples], n_updates: int) -> dict[str, float]:
+        """
+        Compare the current Q-network with the behavior policy of each sample
+        (the Q-network when the sample was collected).
+
+        :param replay_data: Samples of the current minibatch (``None`` if nothing was sampled)
+        :param n_updates: Number of gradient updates done so far, including the current one (the printed one)
+        :return: Mean over the samples of the L2 distance between the weights and of the squared distance,
+            and max over the samples (the one of the oldest sample) of the number of gradient updates,
+            of actions taken and of timesteps since the sample was collected (``nan`` when not available)
+        """
+        stats = dict.fromkeys(self.behavior_stats_names, float("nan"))
+        if replay_data is None or replay_data.optimizer_steps is None:
+            return stats
+        stats["gradient updates difference max"] = n_updates - replay_data.optimizer_steps.min().item()
+        actions_difference = self.num_timesteps - replay_data.timesteps.min().item()
+        stats["actions taken difference max"] = actions_difference
+        stats["timesteps difference max"] = actions_difference // self.n_envs
+        q_net_params = self._get_q_net_params()
+        steps, counts = np.unique(replay_data.optimizer_steps.cpu().numpy(), return_counts=True)
+        distance_sum, distance_sq_sum, n_samples = 0.0, 0.0, 0
+        for step, count in zip(steps, counts):
+            behavior_params = self.behavior_q_net_params.get(int(step))
+            if behavior_params is None:
+                continue
+            distance = th.linalg.vector_norm(q_net_params - behavior_params.to(q_net_params.device)).item()
+            distance_sum += distance * count
+            distance_sq_sum += distance**2 * count
+            n_samples += count
+        if n_samples > 0:
+            stats["behavior distance mean"] = distance_sum / n_samples
+            stats["behavior distance^2 mean"] = distance_sq_sum / n_samples
+        return stats
+
+    def _store_transition(self, replay_buffer, *args, **kwargs) -> None:
+        # Tag the transition with the number of actions taken so far
+        replay_buffer.current_timestep = self.num_timesteps
+        super()._store_transition(replay_buffer, *args, **kwargs)
+
+    def _update_behavior_q_net_params(self) -> None:
+        """
+        Keep the weights the next experiences are collected with,
+        and drop the ones that no experience of the replay buffer was collected with anymore.
+        """
+        self.replay_buffer.current_optimizer_step = self._n_updates  # type: ignore[union-attr]
+        if not self.track_behavior_distance:
+            return
+        self.behavior_q_net_params[self._n_updates] = self._get_q_net_params().cpu()
+        oldest_step = self.replay_buffer.oldest_optimizer_step()  # type: ignore[union-attr]
+        for step in [step for step in self.behavior_q_net_params if step < oldest_step]:
+            del self.behavior_q_net_params[step]
+
+    def _print_cold_buffer_suft(
+        self,
+        n_updates: int,
+        short_suft_mean: float,
+        long_suft_mean: float,
+        short_behavior_stats: dict[str, float],
+        long_behavior_stats: dict[str, float],
+    ) -> None:
         """
         Print the number of actions taken and of gradient updates so far, the learning rate,
         the mean SUFT term of the cold buffer (the squared difference between the current Q-value and the one stored
@@ -266,6 +361,9 @@ class DQN1SL(OffPolicyAlgorithm):
         :param short_suft_mean: SUFT term of the short term samples of this gradient update (not scaled by ``tf_lambda``)
         :param long_suft_mean: SUFT term of the long term samples of this gradient update,
             it is not part of the loss (``nan`` if there are none)
+        :param short_behavior_stats: Comparison between the Q-network before this gradient update
+            and the behavior policy of each short term sample, see ``_behavior_stats()``
+        :param long_behavior_stats: Same for the long term samples (``nan`` if there are none)
         """
         with th.no_grad():
             current_q_values = self.q_net(self.cold_buffer.observations)
@@ -273,13 +371,16 @@ class DQN1SL(OffPolicyAlgorithm):
             old_q_values = th.gather(self.cold_buffer.old_values, dim=1, index=self.cold_buffer.actions.long())
             suft_terms = F.mse_loss(current_q_values, old_q_values)
             # L2 distance between the current weights and the ones before any gradient update
-            q_net_params = th.cat([param.detach().flatten() for param in self.q_net.parameters()])
-            distance = th.linalg.vector_norm(q_net_params - self.cold_q_net_params)
+            distance = th.linalg.vector_norm(self._get_q_net_params() - self.cold_q_net_params)
         learning_rate = self.policy.optimizer.param_groups[0]["lr"]
-        print(f"actions taken {self.num_timesteps} | gradient updates {n_updates} | learning rate {learning_rate} | "
-              f"cold buffer SUFT mean {suft_terms:.6e} | current short term SUFT mean {short_suft_mean:.6e} | "
-              f"current long term SUFT mean {long_suft_mean:.6e} | "
-              f"distance {distance:.6e} | distance^2 {distance ** 2:.6e}")
+        print(f"actions taken {self.num_timesteps} | timestep {self.num_timesteps // self.n_envs} | "
+              f"gradient updates {n_updates} | learning rate {learning_rate} | "
+              f"cold buffer SUFT mean {suft_terms:.2e} | current short term SUFT mean {short_suft_mean:.2e} | "
+              f"current long term SUFT mean {long_suft_mean:.2e} | "
+              f"distance {distance:.2e} | distance^2 {distance ** 2:.2e} | "
+              + " | ".join(f"current short term {name} {value if isinstance(value, int) else format(value, '.2e')}" for name, value in short_behavior_stats.items())
+              + " | "
+              + " | ".join(f"current long term {name} {value if isinstance(value, int) else format(value, '.2e')}" for name, value in long_behavior_stats.items()))
 
     def predict(
         self,
@@ -312,14 +413,14 @@ class DQN1SL(OffPolicyAlgorithm):
         return action, state
 
     def learn(
-        self: SelfDQN1SL,
+        self: SelfDQN1SLSB,
         total_timesteps: int,
         callback: MaybeCallback = None,
         log_interval: int = 4,
-        tb_log_name: str = "DQN1SL",
+        tb_log_name: str = "DQN1SLSB",
         reset_num_timesteps: bool = True,
         progress_bar: bool = False,
-    ) -> SelfDQN1SL:
+    ) -> SelfDQN1SLSB:
         return super().learn(
             total_timesteps=total_timesteps,
             callback=callback,
@@ -330,7 +431,7 @@ class DQN1SL(OffPolicyAlgorithm):
         )
 
     def _excluded_save_params(self) -> list[str]:
-        return [*super()._excluded_save_params(), "q_net", "cold_buffer", "cold_q_net_params"]
+        return [*super()._excluded_save_params(), "q_net", "cold_buffer", "cold_q_net_params", "behavior_q_net_params"]
 
     def _get_torch_save_params(self) -> tuple[list[str], list[str]]:
         state_dicts = ["policy", "policy.optimizer"]
