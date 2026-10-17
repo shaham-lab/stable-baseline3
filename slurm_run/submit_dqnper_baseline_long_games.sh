@@ -14,7 +14,7 @@
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 RUNS=${RUNS:-"1 2 3 4"}
-PARTITION=${PARTITION:-shaham-L4}
+PARTITION=${PARTITION:-shaham-L40}
 
 # The long games: they took more than 4h
 GAMES="Tennis MontezumaRevenge Pitfall Solaris Tutankham DemonAttack Defender VideoPinball BattleZone Phoenix"

@@ -24,7 +24,7 @@ SHORT_BUFFER_SIZE=${SHORT_BUFFER_SIZE:-4000}
 TF_LAMBDA=${TF_LAMBDA:-1}
 SAMPLING_FRACTION=${SAMPLING_FRACTION:-0.5}
 RUNS_PER_TASK=${RUNS_PER_TASK:-3}
-PARTITION=${PARTITION:-shaham-L4}
+PARTITION=${PARTITION:-shaham-L40}
 
 # All the runs of a task share one GPU, each run gets one CPU core and 55G
 # (the 1M transitions peak at ~53.7GB per run), so every array task is sized to RUNS_PER_TASK
