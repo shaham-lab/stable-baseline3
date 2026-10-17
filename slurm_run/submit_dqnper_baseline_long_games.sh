@@ -25,7 +25,7 @@ fi
 
 for GAME in $GAMES; do
   for RUN_NUMBER in $RUNS; do
-    CMD=(sbatch --partition="$PARTITION" --job-name="${GAME,,}_per_base_r${RUN_NUMBER}" "$SCRIPT_DIR/dqnper_baseline.sh" "$GAME" "$RUN_NUMBER")
+    CMD=(sbatch --partition="$PARTITION" --job-name="${GAME,,}_per_base_r${RUN_NUMBER}" "$SCRIPT_DIR/dqnper_baseline.sh" "$GAME:$RUN_NUMBER")
     if [ -n "$DRY_RUN" ]; then
       echo "${CMD[@]}"
     else
