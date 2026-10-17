@@ -6,7 +6,7 @@ import torch as th
 from gymnasium import spaces
 from torch.nn import functional as F
 
-from stable_baselines3.common.buffers import ReplayBuffer
+from stable_baselines3.common.buffers import ReplayBuffer, describe_replay_buffer
 from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
@@ -151,6 +151,7 @@ class DQN(OffPolicyAlgorithm):
 
     def _setup_model(self) -> None:
         super()._setup_model()
+        print("Replay buffer:", describe_replay_buffer(self.replay_buffer))
         self._create_aliases()
         # Copy running stats, see GH issue #996
         self.batch_norm_stats = get_parameters_by_name(self.q_net, ["running_"])

@@ -13,6 +13,9 @@ from stable_baselines3.dqn.dqn1_sl import DQN1SL
 from stable_baselines3.dqn.dqn_sl import DQNSL
 from stable_baselines3.dqn.dqn_n_step import DQNNStep
 from stable_baselines3.dqn.dqnsl_n_step import DQNSLNStep
+from stable_baselines3.dqn.dqnper import DQNPER
+from stable_baselines3.dqn.dqnsl_per_long import DQNSLPERLong
+from stable_baselines3.dqn.dqnsl_per_both import DQNSLPERBoth
 from stable_baselines3.common.callbacks import EvalCallback
 
 import time
@@ -65,6 +68,14 @@ if __name__ == "__main__":
     elif agent_name == 'DQNSLNStep':
         model = DQNSLNStep('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
                            long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction, n_steps=n_steps)
+    elif agent_name == 'DQNPER':
+        model = DQNPER('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=buffer_size)
+    elif agent_name == 'DQNSLPERLong':
+        model = DQNSLPERLong('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
+                             long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
+    elif agent_name == 'DQNSLPERBoth':
+        model = DQNSLPERBoth('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
+                             long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
     else:
         print("ERROR - no valid agent")
 

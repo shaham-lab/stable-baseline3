@@ -14,6 +14,9 @@ from stable_baselines3.dqn.ddqn import DDQN
 from stable_baselines3.dqn.dqn1 import DQN1
 from stable_baselines3.dqn.dqn_n_step import DQNNStep
 from stable_baselines3.dqn.dqnsl_n_step import DQNSLNStep
+from stable_baselines3.dqn.dqnper import DQNPER
+from stable_baselines3.dqn.dqnsl_per_long import DQNSLPERLong
+from stable_baselines3.dqn.dqnsl_per_both import DQNSLPERBoth
 from stable_baselines3.common.callbacks import EvalCallback
 
 import time
@@ -105,6 +108,22 @@ if __name__ == "__main__":
         print("n_steps", n_steps)
         model = DQNSLNStep('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
                            long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction, n_steps=n_steps)
+    elif agent_name == 'DQNPER':
+        model = DQNPER('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=buffer_size)
+    elif agent_name == 'DQNSLPERLong':
+        short_buffer_size = int(sys.argv[8])
+        print("short_buffer_size", short_buffer_size)
+        sampling_fraction = float(sys.argv[9])
+        print("sampling_fraction", sampling_fraction)
+        model = DQNSLPERLong('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
+                             long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
+    elif agent_name == 'DQNSLPERBoth':
+        short_buffer_size = int(sys.argv[8])
+        print("short_buffer_size", short_buffer_size)
+        sampling_fraction = float(sys.argv[9])
+        print("sampling_fraction", sampling_fraction)
+        model = DQNSLPERBoth('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
+                             long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
 
     else:
         print("ERROR - no valid agent")

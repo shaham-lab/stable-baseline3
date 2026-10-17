@@ -11,6 +11,7 @@ from stable_baselines3.common.preprocessing import get_action_dim, get_obs_shape
 from stable_baselines3.common.type_aliases import (
     DictReplayBufferSamples,
     DictRolloutBufferSamples,
+    PrioritizedReplayBufferSamples,
     ReplayBufferSamples,
     RolloutBufferSamples,
 )
@@ -1363,3 +1364,395 @@ class NStepShortLongTermReplayBuffer(NStepReplayBuffer):
         short_term_samples = self.sample(short_term_batch_size, env) if short_term_batch_size > 0 else None
         long_term_samples = self.long_term_buffer.sample(long_term_batch_size, env) if long_term_batch_size > 0 else None
         return short_term_samples, long_term_samples
+
+
+class PrioritySumTree:
+    """
+    Binary sum tree over the priorities of the ``PrioritizedReplayBuffer``, vectorized with NumPy:
+    O(log N) updates and prefix-sum searches for a whole batch at once.
+    Same role as Dopamine's ``SumTree`` (dopamine/jax/replay_memory/sum_tree.py), including ``max_recorded_priority``.
+
+    Leaf ``i`` holds the priority of the flat transition index ``i``, empty leaves hold 0.
+
+    :param capacity: Number of leaves (rounded up to a power of 2)
+    """
+
+    def __init__(self, capacity: int):
+        self.capacity = 1 << int(np.ceil(np.log2(max(capacity, 2))))
+        self.sum_tree = np.zeros(2 * self.capacity, dtype=np.float64)
+        # Largest priority ever set, given to the new transitions (Dopamine: starts at 1.0)
+        self.max_recorded_priority = 1.0
+
+    @property
+    def root(self) -> float:
+        """The root value (total sum) of the sum tree."""
+        return float(self.sum_tree[1])
+
+    def get(self, leaves: np.ndarray) -> np.ndarray:
+        return self.sum_tree[np.asarray(leaves) + self.capacity]
+
+    def set(self, leaves: np.ndarray, values: np.ndarray) -> None:
+        """
+        Set the value of the given leaves and update their ancestors (all leaves are at the same depth).
+        """
+        values = np.asarray(values, dtype=np.float64)
+        self.max_recorded_priority = max(self.max_recorded_priority, float(values.max()))
+        # De-duplicate the leaves, keeping the first value of each (as Dopamine)
+        leaves, first = np.unique(np.asarray(leaves, dtype=np.int64), return_index=True)
+        nodes = leaves + self.capacity
+        self.sum_tree[nodes] = values[first]
+        nodes = np.unique(nodes // 2)
+        while True:
+            self.sum_tree[nodes] = self.sum_tree[2 * nodes] + self.sum_tree[2 * nodes + 1]
+            if nodes[0] == 1:
+                break
+            nodes = np.unique(nodes // 2)
+
+    def query(self, targets: np.ndarray) -> np.ndarray:
+        """
+        For every target v in [0, root), find the leaf i such that sum_{j<i} p_j <= v < sum_{j<=i} p_j.
+        Never returns an empty (zero priority) leaf as long as the root is positive.
+        """
+        targets = np.array(targets, dtype=np.float64)
+        nodes = np.ones(len(targets), dtype=np.int64)
+        while nodes[0] < self.capacity:
+            left = 2 * nodes
+            left_sum = self.sum_tree[left]
+            # Go right when v is past the left subtree, unless the right subtree is empty (float rounding at the end)
+            go_right = (targets >= left_sum) & (self.sum_tree[left + 1] > 0)
+            targets -= left_sum * go_right
+            nodes = left + go_right
+        return nodes - self.capacity
+
+    def stratified_sample(self, batch_size: int) -> np.ndarray:
+        """
+        Divide [0, root) into ``batch_size`` equal segments, pick a random number from each segment
+        and use it to sample from the sum tree (as specified in Schaul et al. (2016), Dopamine TF ``stratified_sample``).
+        """
+        if self.root == 0.0:
+            raise ValueError("Cannot sample from an empty sum tree.")
+        bounds = np.linspace(0.0, 1.0, batch_size + 1)
+        query_values = np.random.uniform(bounds[:-1], bounds[1:]) * self.root
+        return self.query(query_values)
+
+
+class PrioritizedReplayBuffer(ReplayBuffer):
+    """
+    Prioritized Experience Replay buffer (proportional variant), adapted from Google Dopamine
+    (dopamine/jax/replay_memory/samplers.py ``PrioritizedSamplingDistribution``,
+    dopamine/tf/replay_memory/prioritized_replay_buffer.py and sum_tree.py).
+    Paper: Schaul et al. (2016), https://arxiv.org/abs/1511.05952
+
+    - Transition i is sampled with probability P(i) = p_i^priority_exponent / sum_k p_k^priority_exponent,
+      with stratified sampling over the sum tree.
+    - New transitions get the maximal priority recorded so far (``max_recorded_priority``, 1.0 at the start).
+    - ``sample()`` returns the sampling probabilities P(i) and the indices of the sampled transitions;
+      the agent computes the importance-sampling loss weights and sets the new priorities with ``update_priorities()``
+      (in Dopamine: loss_weights = 1 / sqrt(P(i) + 1e-10) normalized by their max over the batch,
+      and priorities = sqrt(per-sample loss + 1e-10)).
+
+    The priorities are kept in a sum tree over the flat indices ``pos * n_envs + env``.
+    The old values (SUFT) are stored and returned as in the ``ReplayBuffer``.
+
+    :param buffer_size: Max number of element in the buffer
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device: PyTorch device
+    :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: Not supported
+    :param handle_timeout_termination: Handle timeout termination (due to timelimit)
+        separately and treat the task as infinite horizon task.
+        https://github.com/DLR-RM/stable-baselines3/issues/284
+    :param priority_exponent: Exponent applied to the priorities given to ``update_priorities()``
+        (Dopamine default 1.0: the agent already takes the square root of the loss)
+    """
+
+    def __init__(
+        self,
+        buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+        is_dqn: bool = False,
+        priority_exponent: float = 1.0,
+    ):
+        super().__init__(buffer_size, observation_space, action_space, device, n_envs, optimize_memory_usage, handle_timeout_termination, is_dqn)
+        if self.optimize_memory_usage:
+            raise NotImplementedError("PrioritizedReplayBuffer doesn't support optimize_memory_usage=True")
+        self.priority_exponent = priority_exponent
+        self.sum_tree = PrioritySumTree(self.buffer_size * self.n_envs)
+
+    def add(
+        self,
+        obs: np.ndarray,
+        next_obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        done: np.ndarray,
+        old_values_to_store,
+        infos: list[dict[str, Any]],
+    ) -> None:
+        # Schaul et al.'s scheme: the new transitions (one per env, overwriting the oldest ones when full)
+        # get the maximum priority so far
+        flat_indices = self.pos * self.n_envs + np.arange(self.n_envs)
+        self.sum_tree.set(flat_indices, np.full(self.n_envs, self.sum_tree.max_recorded_priority))
+        super().add(obs, next_obs, action, reward, done, old_values_to_store, infos)
+
+    def reset(self) -> None:
+        super().reset()
+        self.sum_tree = PrioritySumTree(self.buffer_size * self.n_envs)
+
+    def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> PrioritizedReplayBufferSamples:  # type: ignore[override]
+        """
+        Sample a prioritized batch (stratified sampling), with its sampling probabilities and its indices.
+
+        :param batch_size: Number of element to sample
+        :param env: associated gym VecEnv
+            to normalize the observations/rewards when sampling
+        :return:
+        """
+        flat_indices = self.sum_tree.stratified_sample(batch_size)
+        sampling_probabilities = self.sum_tree.get(flat_indices) / self.sum_tree.root
+        return self._get_prioritized_samples(flat_indices, sampling_probabilities.astype(np.float32), env)
+
+    def update_priorities(self, indices: np.ndarray, priorities: np.ndarray) -> None:
+        """
+        Set the priorities of the sampled transitions (after the update), as Dopamine ``update()``:
+        p_i <- priority_i ** priority_exponent (a zero priority stays zero).
+
+        :param indices: Flat indices returned with the samples
+        :param priorities: New priorities of the sampled transitions
+        """
+        priorities = np.asarray(priorities, dtype=np.float64).flatten()
+        priorities = np.where(priorities == 0.0, 0.0, priorities**self.priority_exponent)
+        self.sum_tree.set(indices, priorities)
+
+    def _get_prioritized_samples(
+        self, flat_indices: np.ndarray, sampling_probabilities: np.ndarray, env: Optional[VecNormalize] = None
+    ) -> PrioritizedReplayBufferSamples:
+        batch_inds, env_indices = flat_indices // self.n_envs, flat_indices % self.n_envs
+
+        if self.is_dqn:
+            # DQN
+            old_values = {
+                "old_values": self.to_torch(self.old_values[batch_inds, env_indices]),
+            }
+        else:
+            # SAC
+            old_values = {
+                "old_values1": self.to_torch(self.old_values1[batch_inds, env_indices]),
+                "old_values2": self.to_torch(self.old_values2[batch_inds, env_indices]),
+            }
+        return PrioritizedReplayBufferSamples(
+            observations=self.to_torch(self._normalize_obs(self.observations[batch_inds, env_indices, :], env)),
+            actions=self.to_torch(self.actions[batch_inds, env_indices, :]),
+            next_observations=self.to_torch(self._normalize_obs(self.next_observations[batch_inds, env_indices, :], env)),
+            # Only use dones that are not due to timeouts
+            dones=self.to_torch((self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices])).reshape(-1, 1)),
+            rewards=self.to_torch(self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env)),
+            sampling_probabilities=self.to_torch(sampling_probabilities.reshape(-1, 1)),
+            indices=flat_indices,
+            **old_values,
+        )
+
+
+class ShortUniformLongPrioritizedReplayBuffer(ShortLongTermReplayBuffer):
+    """
+    ``ShortLongTermReplayBuffer`` whose short term buffer (this buffer) is sampled uniformly
+    and whose long term buffer is a ``PrioritizedReplayBuffer``.
+
+    Every new transition is added to the short term buffer. Once the short term buffer is full, every new transition
+    pops out the oldest one, which is added to the long term buffer. The short term transitions have no priority,
+    so a transition entering the long term buffer gets its maximal recorded priority (Schaul et al.'s scheme
+    for new transitions).
+    The long term samples come with their sampling probabilities and indices, the agent updates their priorities
+    with ``long_term_buffer.update_priorities()``.
+
+    :param short_term_buffer_size: Max number of element in the short term buffer
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device: PyTorch device
+    :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: Not supported
+    :param handle_timeout_termination: Handle timeout termination (due to timelimit)
+        separately and treat the task as infinite horizon task.
+        https://github.com/DLR-RM/stable-baselines3/issues/284
+    :param long_term_buffer_size: Max number of element in the long term buffer
+    :param sampling_fraction: Fraction of each batch taken from the short term buffer
+        (the rest is taken from the long term buffer), see ``sample_short_and_long()``
+    :param priority_exponent: Exponent applied to the priorities of the long term buffer
+    """
+
+    def __init__(
+        self,
+        short_term_buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+        is_dqn: bool = False,
+        long_term_buffer_size: int = 1_000_000,
+        sampling_fraction: float = 0.5,
+        priority_exponent: float = 1.0,
+    ):
+        # The short term part is a plain ReplayBuffer (ShortLongTermReplayBuffer.__init__ is not called
+        # as it would also allocate a uniform long term buffer)
+        ReplayBuffer.__init__(
+            self, short_term_buffer_size, observation_space, action_space, device, n_envs, optimize_memory_usage, handle_timeout_termination, is_dqn
+        )
+        if self.optimize_memory_usage:
+            raise NotImplementedError("ShortUniformLongPrioritizedReplayBuffer doesn't support optimize_memory_usage=True")
+
+        self.long_term_buffer = PrioritizedReplayBuffer(
+            long_term_buffer_size,
+            observation_space,
+            action_space,
+            device,
+            n_envs,
+            optimize_memory_usage,
+            handle_timeout_termination,
+            is_dqn,
+            priority_exponent=priority_exponent,
+        )
+        self.sampling_fraction = sampling_fraction
+
+
+class ShortLongTermPrioritizedReplayBuffer(PrioritizedReplayBuffer):
+    """
+    Short term and long term replay buffer where both buffers are ``PrioritizedReplayBuffer``.
+
+    Every new transition is added to the short term buffer (this buffer) with its maximal recorded priority.
+    Once the short term buffer is full, every new transition pops out the oldest one, which is added to the
+    long term buffer with the priority it had in the short term buffer (its last TD error based priority,
+    or the max priority if it was never sampled).
+    Both parts of a batch come with their sampling probabilities and indices, the agent updates the priorities
+    with ``update_priorities()`` (short term) and ``long_term_buffer.update_priorities()`` (long term).
+
+    :param short_term_buffer_size: Max number of element in the short term buffer
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device: PyTorch device
+    :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: Not supported
+    :param handle_timeout_termination: Handle timeout termination (due to timelimit)
+        separately and treat the task as infinite horizon task.
+        https://github.com/DLR-RM/stable-baselines3/issues/284
+    :param long_term_buffer_size: Max number of element in the long term buffer
+    :param sampling_fraction: Fraction of each batch taken from the short term buffer
+        (the rest is taken from the long term buffer), see ``sample_short_and_long()``
+    :param priority_exponent: Exponent applied to the priorities of both buffers
+    """
+
+    def __init__(
+        self,
+        short_term_buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+        is_dqn: bool = False,
+        long_term_buffer_size: int = 1_000_000,
+        sampling_fraction: float = 0.5,
+        priority_exponent: float = 1.0,
+    ):
+        super().__init__(
+            short_term_buffer_size,
+            observation_space,
+            action_space,
+            device,
+            n_envs,
+            optimize_memory_usage,
+            handle_timeout_termination,
+            is_dqn,
+            priority_exponent=priority_exponent,
+        )
+        self.long_term_buffer = PrioritizedReplayBuffer(
+            long_term_buffer_size,
+            observation_space,
+            action_space,
+            device,
+            n_envs,
+            optimize_memory_usage,
+            handle_timeout_termination,
+            is_dqn,
+            priority_exponent=priority_exponent,
+        )
+        self.sampling_fraction = sampling_fraction
+
+    def add(
+        self,
+        obs: np.ndarray,
+        next_obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        done: np.ndarray,
+        old_values_to_store,
+        infos: list[dict[str, Any]],
+    ) -> None:
+        if self.full:
+            # Move the oldest sample of the short term buffer to the long term buffer, with its priority
+            # (the priorities are stored in the sum trees after the exponent, which is the same for both buffers)
+            env_indices = np.arange(self.n_envs)
+            priorities = self.sum_tree.get(self.pos * self.n_envs + env_indices)
+            long_term_pos = self.long_term_buffer.pos
+            self.long_term_buffer.add(*ShortLongTermReplayBuffer._get_oldest(self))
+            self.long_term_buffer.sum_tree.set(long_term_pos * self.n_envs + env_indices, priorities)
+        # add the regular sample into the short term buffer (with the max recorded priority)
+        super().add(obs, next_obs, action, reward, done, old_values_to_store, infos)
+
+    def reset(self) -> None:
+        super().reset()
+        self.long_term_buffer.reset()
+
+    def sample_short_and_long(
+        self, batch_size: int, env: Optional[VecNormalize] = None
+    ) -> tuple[Optional[PrioritizedReplayBufferSamples], Optional[PrioritizedReplayBufferSamples]]:
+        """
+        Sample prioritized elements from the short term and the long term buffers, according to a given ratio
+        (same rule as ``ShortLongTermReplayBuffer.sample_short_and_long()``).
+
+        :param batch_size: Number of element to sample (short term + long term)
+        :param env: associated gym VecEnv
+            to normalize the observations/rewards when sampling
+        :return: (short term samples, long term samples), one of them is ``None``
+            when nothing is taken from the corresponding buffer
+        """
+        return ShortLongTermReplayBuffer.sample_short_and_long(self, batch_size, env)  # type: ignore[arg-type,return-value]
+
+
+def describe_replay_buffer(replay_buffer: ReplayBuffer) -> str:
+    """
+    Human readable description of a replay buffer: its kind (uniform / prioritized / n-step) and its size,
+    and for the short term + long term buffers the description of both parts and the sampling fraction.
+
+    :param replay_buffer: The replay buffer of an agent
+    :return: The description (one line, or three lines for a short term + long term buffer)
+    """
+
+    def describe(buffer: ReplayBuffer) -> str:
+        if isinstance(buffer, PrioritizedReplayBuffer):
+            kind = f"prioritized sampling (proportional PER, priority exponent {buffer.priority_exponent})"
+        elif isinstance(buffer, NStepReplayBuffer):
+            kind = f"uniform sampling, {buffer.n_steps}-step returns (gamma {buffer.gamma})"
+        elif isinstance(buffer, NStepLongTermReplayBuffer):
+            kind = "uniform sampling, n-step transitions"
+        else:
+            kind = "uniform sampling"
+        return f"{kind}, size {buffer.buffer_size * buffer.n_envs}"
+
+    long_term_buffer = getattr(replay_buffer, "long_term_buffer", None)
+    if long_term_buffer is None:
+        return f"{type(replay_buffer).__name__}: {describe(replay_buffer)}"
+    return (
+        f"{type(replay_buffer).__name__}: short term + long term buffers, "
+        f"{replay_buffer.sampling_fraction} of each batch from the short term buffer\n"  # type: ignore[attr-defined]
+        f"  short term buffer: {describe(replay_buffer)}\n"
+        f"  long term buffer: {type(long_term_buffer).__name__}: {describe(long_term_buffer)}"
+    )

@@ -61,6 +61,22 @@ class ReplayBufferSamples(NamedTuple):
     discounts: Optional[th.Tensor] = None
 
 
+class PrioritizedReplayBufferSamples(NamedTuple):
+    observations: th.Tensor
+    actions: th.Tensor
+    next_observations: th.Tensor
+    dones: th.Tensor
+    rewards: th.Tensor
+    # Sampling probabilities P(i) of the sampled transitions, shape [batch, 1]
+    sampling_probabilities: th.Tensor
+    # Flat indices of the sampled transitions (pos * n_envs + env), to update their priorities
+    indices: np.ndarray
+    # Only the fields of the running agent are filled, the others stay None
+    old_values: Optional[th.Tensor] = None  # DQN / DDQN / DQN1
+    old_values1: Optional[th.Tensor] = None  # SAC
+    old_values2: Optional[th.Tensor] = None  # SAC
+
+
 class DictReplayBufferSamples(NamedTuple):
     observations: TensorDict
     actions: th.Tensor
