@@ -989,6 +989,19 @@ class NStepReplayBuffer(ReplayBuffer):
         obs = self._normalize_obs(self.observations[batch_inds, env_indices], env)
         actions = self.actions[batch_inds, env_indices]
 
+        # SUFT: old values of the first transition of the n-step trajectory (the one being updated)
+        if self.is_dqn:
+            # DQN
+            old_values = {
+                "old_values": self.to_torch(self.old_values[batch_inds, env_indices]),
+            }
+        else:
+            # SAC
+            old_values = {
+                "old_values1": self.to_torch(self.old_values1[batch_inds, env_indices]),
+                "old_values2": self.to_torch(self.old_values2[batch_inds, env_indices]),
+            }
+
         return ReplayBufferSamples(
             observations=self.to_torch(obs),  # type: ignore[arg-type]
             actions=self.to_torch(actions),
@@ -996,6 +1009,7 @@ class NStepReplayBuffer(ReplayBuffer):
             dones=self.to_torch(final_dones),
             rewards=self.to_torch(n_step_returns),
             discounts=self.to_torch(target_q_discounts),
+            **old_values,
         )
 
 
@@ -1098,6 +1112,240 @@ class ShortLongTermReplayBuffer(ReplayBuffer):
     ) -> tuple[Optional[ReplayBufferSamples], Optional[ReplayBufferSamples]]:
         """
         Sample elements from the short term and the long term buffers, according to a given ratio.
+        As long as the long term buffer does not have enough samples,
+        the whole batch is taken from the short term buffer.
+
+        :param batch_size: Number of element to sample (short term + long term)
+        :param env: associated gym VecEnv
+            to normalize the observations/rewards when sampling
+        :return: (short term samples, long term samples), one of them is ``None``
+            when nothing is taken from the corresponding buffer
+        """
+        short_term_batch_size = round(batch_size * self.sampling_fraction)
+        long_term_batch_size = batch_size - short_term_batch_size
+        if not (self.long_term_buffer.pos >= long_term_batch_size or self.long_term_buffer.full):
+            # Not enough samples in the long term buffer yet: take everything from the short term buffer
+            short_term_batch_size, long_term_batch_size = batch_size, 0
+        short_term_samples = self.sample(short_term_batch_size, env) if short_term_batch_size > 0 else None
+        long_term_samples = self.long_term_buffer.sample(long_term_batch_size, env) if long_term_batch_size > 0 else None
+        return short_term_samples, long_term_samples
+
+
+class NStepLongTermReplayBuffer(ReplayBuffer):
+    """
+    Long term part of the ``NStepShortLongTermReplayBuffer``.
+
+    Its transitions are already n-step transitions: they are computed by the short term buffer
+    when the transition leaves it (at that moment its next ``n_steps - 1`` transitions are still in the short term buffer).
+    Each stored row holds (s_t, a_t, R_t^(n), s_{t+k}, done_{t+k}, old values of s_t) and the bootstrap discount gamma^k,
+    where k <= n_steps is the number of steps until the first termination/truncation.
+
+    :param buffer_size: Max number of element in the buffer
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device: PyTorch device
+    :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: Not supported
+    :param handle_timeout_termination: Not used, the dones are already masked by the short term buffer
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.optimize_memory_usage:
+            raise NotImplementedError("NStepLongTermReplayBuffer doesn't support optimize_memory_usage=True")
+        # Bootstrap discount of each n-step transition: gamma ** k
+        self.discounts = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+
+    def add(  # type: ignore[override]
+        self,
+        obs: np.ndarray,
+        next_obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        done: np.ndarray,
+        old_values_to_store,
+        infos: list[dict[str, Any]],
+        discount: np.ndarray,
+    ) -> None:
+        """
+        :param reward: n-step return R_t^(n)
+        :param done: true termination at the end of the n-step trajectory (timeouts already removed)
+        :param discount: bootstrap discount gamma ** k
+        """
+        self.discounts[self.pos] = np.array(discount)
+        super().add(obs, next_obs, action, reward, done, old_values_to_store, infos)
+
+    def _get_samples(self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
+        # Sample randomly the env idx
+        env_indices = np.random.randint(0, high=self.n_envs, size=(len(batch_inds),))
+
+        if self.is_dqn:
+            # DQN
+            old_values = {
+                "old_values": self.to_torch(self.old_values[batch_inds, env_indices]),
+            }
+        else:
+            # SAC
+            old_values = {
+                "old_values1": self.to_torch(self.old_values1[batch_inds, env_indices]),
+                "old_values2": self.to_torch(self.old_values2[batch_inds, env_indices]),
+            }
+        return ReplayBufferSamples(
+            observations=self.to_torch(self._normalize_obs(self.observations[batch_inds, env_indices, :], env)),
+            actions=self.to_torch(self.actions[batch_inds, env_indices, :]),
+            next_observations=self.to_torch(self._normalize_obs(self.next_observations[batch_inds, env_indices, :], env)),
+            dones=self.to_torch(self.dones[batch_inds, env_indices].reshape(-1, 1)),
+            # Note: with VecNormalize, the reward normalization is applied to the n-step return
+            rewards=self.to_torch(self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env)),
+            discounts=self.to_torch(self.discounts[batch_inds, env_indices].reshape(-1, 1)),
+            **old_values,
+        )
+
+
+class NStepShortLongTermReplayBuffer(NStepReplayBuffer):
+    """
+    N-step version of the ``ShortLongTermReplayBuffer``.
+
+    Every new transition is added to the short term buffer (this buffer, of size ``short_term_buffer_size``),
+    which is an ``NStepReplayBuffer``: the n-step returns of its samples are computed at sampling time
+    (truncated at the newest transition, whose next transitions were not collected yet).
+    Once the short term buffer is full, every new transition pops out the oldest one.
+    At that moment its next ``n_steps - 1`` transitions are still in the short term buffer, so its full n-step
+    transition (n-step return, s_{t+k}, done, gamma^k) is computed and added to the long term buffer
+    (``NStepLongTermReplayBuffer``, of size ``long_term_buffer_size``). The n-step returns of the long term samples
+    are therefore never cut at the border between the two buffers.
+    The old values (SUFT) of s_t move with the transition.
+
+    :param short_term_buffer_size: Max number of element in the short term buffer (must be >= ``n_steps``)
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device: PyTorch device
+    :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: Not supported
+    :param handle_timeout_termination: Handle timeout termination (due to timelimit)
+        separately and treat the task as infinite horizon task.
+        https://github.com/DLR-RM/stable-baselines3/issues/284
+    :param long_term_buffer_size: Max number of element in the long term buffer
+    :param sampling_fraction: Fraction of each batch taken from the short term buffer
+        (the rest is taken from the long term buffer), see ``sample_short_and_long()``
+    :param n_steps: Number of steps to accumulate rewards for n-step returns
+    :param gamma: Discount factor for future rewards
+    """
+
+    def __init__(
+        self,
+        short_term_buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+        is_dqn: bool = False,
+        long_term_buffer_size: int = 1_000_000,
+        sampling_fraction: float = 0.5,
+        n_steps: int = 3,
+        gamma: float = 0.99,
+    ):
+        super().__init__(
+            short_term_buffer_size,
+            observation_space,
+            action_space,
+            device,
+            n_envs,
+            optimize_memory_usage,
+            handle_timeout_termination,
+            is_dqn,
+            n_steps=n_steps,
+            gamma=gamma,
+        )
+        assert self.buffer_size >= n_steps, "The short term buffer must hold at least `n_steps` transitions per env"
+
+        self.long_term_buffer = NStepLongTermReplayBuffer(
+            long_term_buffer_size,
+            observation_space,
+            action_space,
+            device,
+            n_envs,
+            optimize_memory_usage,
+            handle_timeout_termination,
+            is_dqn,
+        )
+        self.sampling_fraction = sampling_fraction
+
+    def add(
+        self,
+        obs: np.ndarray,
+        next_obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        done: np.ndarray,
+        old_values_to_store,
+        infos: list[dict[str, Any]],
+    ) -> None:
+        if self.full:
+            # add the n-step transition of the oldest sample of the short replay buffer
+            self.long_term_buffer.add(*self._get_oldest_n_step())
+        # add the regular sample into the short term buffer
+        super().add(obs, next_obs, action, reward, done, old_values_to_store, infos)
+
+    def _get_oldest_n_step(self) -> tuple:
+        """
+        Build the n-step transition of the oldest sample of the short term buffer (the one at ``self.pos``
+        once the buffer is full), for every env, in the format expected by ``NStepLongTermReplayBuffer.add()``.
+        Its next ``n_steps - 1`` transitions are the next rows of the short term buffer (all already collected).
+        """
+        env_indices = np.arange(self.n_envs)
+        # Indices of the n-step trajectory, shape: [n_steps]
+        indices = (self.pos + np.arange(self.n_steps)) % self.buffer_size
+        rewards_seq = self.rewards[indices].T  # [n_envs, n_steps]
+        dones_seq = self.dones[indices].T
+        truncated_seq = self.timeouts[indices].T
+
+        # Stop at the first done/truncation (inclusive), otherwise keep the full sequence
+        done_or_truncated = np.logical_or(dones_seq, truncated_seq)
+        done_idx = np.where(done_or_truncated.any(axis=1), done_or_truncated.argmax(axis=1), self.n_steps - 1)  # [n_envs]
+        mask = np.arange(self.n_steps).reshape(1, -1) <= done_idx[:, None]  # [n_envs, n_steps]
+
+        discounts = self.gamma ** np.arange(self.n_steps, dtype=np.float32).reshape(1, -1)  # [1, n_steps]
+        n_step_returns = (rewards_seq * discounts * mask).sum(axis=1).astype(np.float32)  # [n_envs]
+        # Bootstrap discount: gamma ** k, k = number of rewards in the n-step return
+        target_q_discounts = (self.gamma ** mask.sum(axis=1)).astype(np.float32)  # [n_envs]
+
+        # next_obs/done at the final point of the n-step trajectory (only true terminations stop the bootstrap)
+        last_indices = (self.pos + done_idx) % self.buffer_size
+        next_obs = self.next_observations[last_indices, env_indices]
+        final_dones = self.dones[last_indices, env_indices] * (1.0 - self.timeouts[last_indices, env_indices])
+
+        # SUFT: old values of s_t
+        if self.is_dqn:
+            # DQN
+            old_values_to_store = th.as_tensor(self.old_values[self.pos])
+        else:
+            # SAC
+            old_values_to_store = (th.as_tensor(self.old_values1[self.pos]), th.as_tensor(self.old_values2[self.pos]))
+        # The timeouts are already handled in final_dones
+        infos = [{"TimeLimit.truncated": False} for _ in range(self.n_envs)]
+        return (
+            self.observations[self.pos],
+            next_obs,
+            self.actions[self.pos],
+            n_step_returns,
+            final_dones,
+            old_values_to_store,
+            infos,
+            target_q_discounts,
+        )
+
+    def reset(self) -> None:
+        super().reset()
+        self.long_term_buffer.reset()
+
+    def sample_short_and_long(
+        self, batch_size: int, env: Optional[VecNormalize] = None
+    ) -> tuple[Optional[ReplayBufferSamples], Optional[ReplayBufferSamples]]:
+        """
+        Sample n-step transitions from the short term and the long term buffers, according to a given ratio.
         As long as the long term buffer does not have enough samples,
         the whole batch is taken from the short term buffer.
 

@@ -12,6 +12,8 @@ from stable_baselines3.common.env_util import make_atari_env
 from stable_baselines3.common.vec_env import VecFrameStack
 from stable_baselines3.dqn.ddqn import DDQN
 from stable_baselines3.dqn.dqn1 import DQN1
+from stable_baselines3.dqn.dqn_n_step import DQNNStep
+from stable_baselines3.dqn.dqnsl_n_step import DQNSLNStep
 from stable_baselines3.common.callbacks import EvalCallback
 
 import time
@@ -87,6 +89,22 @@ if __name__ == "__main__":
         print("sampling_fraction", sampling_fraction)
         model = DDQNSL('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
                       long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
+    elif agent_name == 'DQNNStep':
+        # optional n-step length, Rainbow default is 3
+        n_steps = int(sys.argv[8]) if len(sys.argv) > 8 else 3
+        print("n_steps", n_steps)
+        model = DQNNStep('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=buffer_size,
+                         n_steps=n_steps)
+    elif agent_name == 'DQNSLNStep':
+        short_buffer_size = int(sys.argv[8])
+        print("short_buffer_size", short_buffer_size)
+        sampling_fraction = float(sys.argv[9])
+        print("sampling_fraction", sampling_fraction)
+        # optional n-step length, Rainbow default is 3
+        n_steps = int(sys.argv[10]) if len(sys.argv) > 10 else 3
+        print("n_steps", n_steps)
+        model = DQNSLNStep('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
+                           long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction, n_steps=n_steps)
 
     else:
         print("ERROR - no valid agent")

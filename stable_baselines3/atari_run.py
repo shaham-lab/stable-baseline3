@@ -11,6 +11,8 @@ from stable_baselines3.dqn.ddqn_sl import DDQNSL
 from stable_baselines3.dqn.dqn1 import DQN1
 from stable_baselines3.dqn.dqn1_sl import DQN1SL
 from stable_baselines3.dqn.dqn_sl import DQNSL
+from stable_baselines3.dqn.dqn_n_step import DQNNStep
+from stable_baselines3.dqn.dqnsl_n_step import DQNSLNStep
 from stable_baselines3.common.callbacks import EvalCallback
 
 import time
@@ -20,11 +22,13 @@ from datetime import timedelta
 gym.register_envs(ale_py)
 
 if __name__ == "__main__":
-    agent_name = "DQN" # TODO: change this
+    agent_name = "DQNNStep" # TODO: change this
     buffer_size = 100000 # 100K
     # DQNSL only: short term buffer size and fraction of each batch taken from it (buffer_size is the long term one)
     short_term_buffer_size = 4000 # 4K
     sampling_fraction = 0.5
+    # DQNNStep / DQNSLNStep only: n-step return length (Rainbow uses 3)
+    n_steps = 3
     timesteps = 100000 # Atari 100K
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     #SUFT
@@ -55,6 +59,12 @@ if __name__ == "__main__":
     elif agent_name == 'DDQNSL':
         model = DDQNSL('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
                       long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
+    elif agent_name == 'DQNNStep':
+        model = DQNNStep('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=buffer_size,
+                         n_steps=n_steps)
+    elif agent_name == 'DQNSLNStep':
+        model = DQNSLNStep('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
+                           long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction, n_steps=n_steps)
     else:
         print("ERROR - no valid agent")
 

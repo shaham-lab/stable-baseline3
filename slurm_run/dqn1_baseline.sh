@@ -10,7 +10,7 @@
 #
 # Usage: sbatch dqn1_baseline.sh <Game> <run_number>     e.g. sbatch dqn1_baseline.sh Alien 1
 # <Game> is the ALE name without prefix/suffix (Alien, KungFuMaster, ...)
-# To submit many games / runs at once use submit_dqn1_baseline.sh
+# To submit many games / runs at once use submit_dqn1_baseline_long_games.sh / submit_dqn1_baseline_other_games.sh
 
 GAME=$1
 RUN_NUMBER=$2
