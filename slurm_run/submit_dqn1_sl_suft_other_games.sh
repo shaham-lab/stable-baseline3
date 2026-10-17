@@ -21,10 +21,10 @@
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 read -ra RUN_LIST <<< "${RUNS:-1 2 3 4}"
 SHORT_BUFFER_SIZE=${SHORT_BUFFER_SIZE:-4000}
-TF_LAMBDA=${TF_LAMBDA:-1}
+TF_LAMBDA=${TF_LAMBDA:-0}
 SAMPLING_FRACTION=${SAMPLING_FRACTION:-0.5}
 RUNS_PER_TASK=${RUNS_PER_TASK:-3}
-PARTITION=${PARTITION:-generic}
+PARTITION=${PARTITION:-L40s-4h}
 
 # All the runs of a task share one GPU, each run gets one CPU core and 55G
 # (the 1M transitions peak at ~53.7GB per run), so every array task is sized to RUNS_PER_TASK
