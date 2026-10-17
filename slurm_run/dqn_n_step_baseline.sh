@@ -1,24 +1,45 @@
 #!/bin/bash
 #SBATCH --job-name=dqn_nstep_base
-#SBATCH --partition=shaham-L4
+#SBATCH --partition=L4-4h
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=3
+#SBATCH --mem=165G
 
-# Baseline: a single DQNNStep run (DQN with the Rainbow n-step Q update) on one Atari game (1M buffer) on one CPU core
-# RAM: the 1M replay buffer takes ~57GB (observations + next observations), plus the process overhead
+# Baseline with the Rainbow n-step Q update: up to 3 DQNNStep runs (Atari game, run number) in parallel in one job sharing one GPU, one CPU core per run
+# Each run has a single 1M replay buffer
+# RAM: 55G per run - the 1M transitions peak at ~53.7GB (observations + next observations) including the process overhead
 #
-# Usage: sbatch dqn_n_step_baseline.sh <Game> <run_number> [<n_steps>]     e.g. sbatch dqn_n_step_baseline.sh Alien 1 3
+# Usage: sbatch dqn_n_step_baseline.sh <n_steps> <runs>
+#        e.g. sbatch dqn_n_step_baseline.sh 3 Alien:1,Pong:1,Qbert:1
+# <runs> is a comma separated list of <Game>:<run_number> pairs that run in parallel
 # <Game> is the ALE name without prefix/suffix (Alien, KungFuMaster, ...)
-# <n_steps> is the n-step return length (default 3, as in Rainbow)
-# To submit many games / runs at once use submit_dqn_n_step_baseline_long_games.sh / submit_dqn_n_step_baseline_other_games.sh
+# <n_steps> is the n-step return length (Rainbow uses 3)
+# As a job array pass one <runs> argument per array task: task i runs the i-th <runs> (0-based)
+#        e.g. sbatch --array=0-1 dqn_n_step_baseline.sh 3 Alien:1,Pong:1,Qbert:1 Alien:2,Pong:2,Qbert:2
+# The #SBATCH lines above are sized for 3 runs; for another number of runs pass --cpus-per-task / --mem to sbatch
+# To submit many games at once use submit_dqn_n_step_baseline_long_games.sh / submit_dqn_n_step_baseline_other_games.sh
 
-GAME=$1
-RUN_NUMBER=$2
-N_STEPS=${3:-3}
-if [ -z "$GAME" ] || [ -z "$RUN_NUMBER" ]; then
-  echo "Usage: sbatch dqn_n_step_baseline.sh <Game> <run_number> [<n_steps>]" >&2
+N_STEPS=$1
+if [ -z "$N_STEPS" ] || [ -z "$2" ]; then
+  echo "Usage: sbatch dqn_n_step_baseline.sh <n_steps> <runs> [<runs> ...]" >&2
   exit 1
+fi
+shift 1
+RUN_GROUPS=("$@")
+
+# Job array: pick this task's runs
+if [ -n "$SLURM_ARRAY_TASK_ID" ]; then
+  RUN_GROUP=${RUN_GROUPS[$SLURM_ARRAY_TASK_ID]}
+  if [ -z "$RUN_GROUP" ]; then
+    echo "Array task $SLURM_ARRAY_TASK_ID is past the last of the ${#RUN_GROUPS[@]} given <runs>" >&2
+    exit 1
+  fi
+  echo "Array task $SLURM_ARRAY_TASK_ID: $RUN_GROUP, n_steps $N_STEPS"
+elif [ ${#RUN_GROUPS[@]} -gt 1 ]; then
+  echo "Several <runs> arguments are only allowed in a job array (sbatch --array=...)" >&2
+  exit 1
+else
+  RUN_GROUP=${RUN_GROUPS[0]}
 fi
 
 SB3_DIR=/home/dsi/fiskustal/talfiskus/stable-baselines3-new/stable-baseline3
@@ -29,10 +50,9 @@ TF_LAMBDA=0
 AGENT_NAME="DQNNStep"
 RESULTS_DIR=$SB3_DIR/results/$AGENT_NAME
 TIMESTEPS=1000000
-GYM_ENV_NAME="ALE/${GAME}-v5"
 BUFFER_SIZE=1000000
 
-# One core for the run: stop PyTorch / NumPy from spawning extra threads
+# One core per run: stop PyTorch / NumPy from spawning extra threads
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
@@ -43,7 +63,23 @@ export PYTHONPATH="$SB3_DIR${PYTHONPATH:+:$PYTHONPATH}"
 mkdir -p "$RESULTS_DIR"
 cd "$SB3_DIR/stable_baselines3" || exit 1
 
-LOG_FILE="$RESULTS_DIR/${GAME}-v5_${AGENT_NAME}_baseline_tf_lambda_${TF_LAMBDA}_timesteps_${TIMESTEPS}_buffer_${BUFFER_SIZE}_n_steps_${N_STEPS}_run_${RUN_NUMBER}.log"
-$PYTHON "$SB3_DIR/stable_baselines3/atari100k.py" "$DEVICE" "$TF_LAMBDA" "$AGENT_NAME" "$TIMESTEPS" "$RUN_NUMBER" "$GYM_ENV_NAME" "$BUFFER_SIZE" \
-  "$N_STEPS" \
-  > "$LOG_FILE" 2>&1
+# Start every run in the background on the shared GPU, each with its own log file
+IFS=',' read -ra RUN_PAIRS <<< "$RUN_GROUP"
+PIDS=()
+for RUN_PAIR in "${RUN_PAIRS[@]}"; do
+  GAME=${RUN_PAIR%%:*}
+  RUN_NUMBER=${RUN_PAIR##*:}
+  GYM_ENV_NAME="ALE/${GAME}-v5"
+  LOG_FILE="$RESULTS_DIR/${GAME}-v5_${AGENT_NAME}_baseline_tf_lambda_${TF_LAMBDA}_timesteps_${TIMESTEPS}_buffer_${BUFFER_SIZE}_n_steps_${N_STEPS}_run_${RUN_NUMBER}.log"
+  $PYTHON "$SB3_DIR/stable_baselines3/atari100k.py" "$DEVICE" "$TF_LAMBDA" "$AGENT_NAME" "$TIMESTEPS" "$RUN_NUMBER" "$GYM_ENV_NAME" "$BUFFER_SIZE" \
+    "$N_STEPS" \
+    > "$LOG_FILE" 2>&1 &
+  PIDS+=($!)
+done
+
+# Wait for all the runs; the job fails if any of them failed
+STATUS=0
+for PID in "${PIDS[@]}"; do
+  wait "$PID" || STATUS=1
+done
+exit $STATUS
