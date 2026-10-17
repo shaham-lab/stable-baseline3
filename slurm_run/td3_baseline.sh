@@ -1,27 +1,49 @@
 #!/bin/bash
 #SBATCH --job-name=td3_base
 #SBATCH --partition=cpu192G-48h
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=20
+#SBATCH --mem=140G
 #SBATCH --mail-user=fiskust@biu.ac.il
 #SBATCH --mail-type=END
 
 # Baseline: TD3 on one MuJoCo v5 environment (1M buffer), all the runs in parallel in one job, one CPU core per run
-# RAM: 16G per run - the 1M replay buffer takes ~6GB for Humanoid (observations + next observations), less for the others
+# RAM: 7G per run - the 1M replay buffer takes ~6GB for Humanoid (observations + next observations), less for the others
 #
-# Usage: sbatch td3_baseline.sh <Env> [run_number ...]     e.g. sbatch td3_baseline.sh Ant        (runs 1-4)
-#                                                               sbatch td3_baseline.sh Ant 1 2    (only these runs)
+# Usage: sbatch td3_baseline.sh <Env> <batch_size> <train_freq> [run_number ...]
+#        e.g. sbatch td3_baseline.sh Ant 32 4        (runs 1-20)
+#             sbatch td3_baseline.sh Ant 32 4 1 2    (only these runs)
 # <Env> is the MuJoCo name without the version suffix (Ant, HalfCheetah, Hopper, Humanoid, Walker2d)
-# The #SBATCH lines above are sized for 4 runs; for another number of runs pass --cpus-per-task / --mem to sbatch
-# To submit many environments at once use submit_td3_baseline.sh (it sizes the job to the number of runs)
+# As a job array <Env> and <train_freq> are comma separated lists and each array task runs one (train_freq, Env) pair:
+# task i runs Env i % N_ENVS with train_freq i / N_ENVS, so the array is 0..N_ENVS*N_TRAIN_FREQS-1
+#        e.g. sbatch --array=0-1 td3_baseline.sh Ant,Hopper 32 4        (Ant / Hopper, train_freq 4)
+#             sbatch --array=0-3 td3_baseline.sh Ant,Hopper 32 4,1      (tasks 0-1 train_freq 4, tasks 2-3 train_freq 1)
+# <batch_size> is the minibatch size, <train_freq> is the number of environment steps between gradient updates
+# The #SBATCH lines above are sized for 20 runs; for another number of runs pass --cpus-per-task / --mem to sbatch
+# To submit many environments at once use submit_td3_baseline.sh (one job array, sized to the number of runs)
 
 ENV_NAME=$1
-if [ -z "$ENV_NAME" ]; then
-  echo "Usage: sbatch td3_baseline.sh <Env> [run_number ...]" >&2
+BATCH_SIZE=$2
+TRAIN_FREQ=$3
+if [ -z "$ENV_NAME" ] || [ -z "$BATCH_SIZE" ] || [ -z "$TRAIN_FREQ" ]; then
+  echo "Usage: sbatch td3_baseline.sh <Env> <batch_size> <train_freq> [run_number ...]" >&2
   exit 1
 fi
-shift
-RUNS=${*:-"1 2 3 4"}
+shift 3
+RUNS=${*:-"$(seq -s " " 1 20)"}
+
+# Job array: pick this task's (train_freq, environment) pair from the comma separated lists
+if [ -n "$SLURM_ARRAY_TASK_ID" ]; then
+  IFS=',' read -ra ENV_LIST <<< "$ENV_NAME"
+  IFS=',' read -ra TRAIN_FREQ_LIST <<< "$TRAIN_FREQ"
+  N_ENVS=${#ENV_LIST[@]}
+  ENV_NAME=${ENV_LIST[$((SLURM_ARRAY_TASK_ID % N_ENVS))]}
+  TRAIN_FREQ=${TRAIN_FREQ_LIST[$((SLURM_ARRAY_TASK_ID / N_ENVS))]}
+  if [ -z "$ENV_NAME" ] || [ -z "$TRAIN_FREQ" ]; then
+    echo "No (train_freq, environment) for array task $SLURM_ARRAY_TASK_ID in train_freqs (${TRAIN_FREQ_LIST[*]}) x environments (${ENV_LIST[*]})" >&2
+    exit 1
+  fi
+  echo "Array task $SLURM_ARRAY_TASK_ID: $ENV_NAME, train_freq $TRAIN_FREQ"
+fi
 
 SB3_DIR=/home/dsi/fiskustal/talfiskus/stable-baselines3-new/stable-baseline3
 PYTHON=~/miniconda3/envs/stable-baselines3-mujoco/bin/python
@@ -48,8 +70,9 @@ cd "$SB3_DIR/stable_baselines3" || exit 1
 # Start every run in the background, each with its own log file
 PIDS=()
 for RUN_NUMBER in $RUNS; do
-  LOG_FILE="$RESULTS_DIR/${GYM_ENV_NAME}_${AGENT_NAME}_baseline_tf_lambda_${TF_LAMBDA}_timesteps_${TIMESTEPS}_buffer_${BUFFER_SIZE}_run_${RUN_NUMBER}.log"
+  LOG_FILE="$RESULTS_DIR/${GYM_ENV_NAME}_${AGENT_NAME}_baseline_tf_lambda_${TF_LAMBDA}_timesteps_${TIMESTEPS}_buffer_${BUFFER_SIZE}_batch_${BATCH_SIZE}_train_freq_${TRAIN_FREQ}_run_${RUN_NUMBER}.log"
   $PYTHON "$SB3_DIR/stable_baselines3/mujoco_10M.py" "$DEVICE" "$TF_LAMBDA" "$AGENT_NAME" "$TIMESTEPS" "$RUN_NUMBER" "$GYM_ENV_NAME" "$BUFFER_SIZE" \
+    "$BATCH_SIZE" "$TRAIN_FREQ" \
     > "$LOG_FILE" 2>&1 &
   PIDS+=($!)
 done

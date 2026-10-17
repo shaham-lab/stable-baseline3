@@ -3,10 +3,10 @@
 # each task runs all the runs of its pair in parallel
 #
 # Usage:
-#   ./submit_ddpg_baseline.sh                      all 5 MuJoCo environments, runs 1-20, train freqs 4 and 1 (1 job array, 10 tasks)
+#   ./submit_ddpg_baseline.sh                      all 5 MuJoCo environments, runs 1-20, batch 256, train freq 1 (1 job array, 5 tasks)
 #   ./submit_ddpg_baseline.sh Ant Hopper           only these environments
 #   RUNS="1 2" ./submit_ddpg_baseline.sh Ant       only these runs
-#   BATCH_SIZE=256 TRAIN_FREQ=1 ./submit_ddpg_baseline.sh   other minibatch size / train frequencies (default 32 / "4 1")
+#   BATCH_SIZE=32 TRAIN_FREQ="4 1" ./submit_ddpg_baseline.sh   other minibatch size / train frequencies (default 256 / 1)
 #   DRY_RUN=1 ./submit_ddpg_baseline.sh            print the sbatch command without submitting
 # Array task i runs environment i % N_ENVS with train frequency i / N_ENVS (0-based); the task log is slurm-<job id>_<task id>.out
 

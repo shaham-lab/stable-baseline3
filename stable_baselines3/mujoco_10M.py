@@ -7,6 +7,8 @@ import gymnasium as gym
 import numpy as np
 from stable_baselines3 import SAC, TD3, DDPG
 from stable_baselines3.ddpg.ddpg_sl import DDPGSL
+from stable_baselines3.sac.sac_sl import SACSL
+from stable_baselines3.td3.td3_sl import TD3SL
 from stable_baselines3.common.callbacks import EvalCallback
 from stable_baselines3.common.noise import NormalActionNoise
 
@@ -17,7 +19,7 @@ if __name__ == "__main__":
     # Usage:
     # python mujoco_cf.py <device> <tf_lambda> <agent_name> <timesteps> <run_number> <gym_env_name> <buffer_size>
     #                     <batch_size> <train_freq>
-    # for the short-long agents (DDPGSL) <buffer_size> is the long term buffer size, followed by:
+    # for the short-long agents (DDPGSL, TD3SL, SACSL) <buffer_size> is the long term buffer size, followed by:
     # <short_buffer_size> <sampling_fraction>
     # get the device from command line
     run_device = sys.argv[1]
@@ -69,13 +71,15 @@ if __name__ == "__main__":
     elif agent_name == 'SAC':
         model = SAC('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size, tf_lambda=tf_lambda,
                     **sac_kwargs)
-    elif agent_name == 'DDPGSL':
+    elif agent_name in ('DDPGSL', 'TD3SL', 'SACSL'):
         short_buffer_size = int(sys.argv[10])
         print("short_buffer_size", short_buffer_size)
         sampling_fraction = float(sys.argv[11])
         print("sampling_fraction", sampling_fraction)
-        model = DDPGSL('MlpPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
-                       long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction, **td3_ddpg_kwargs)
+        sl_agent = {'DDPGSL': DDPGSL, 'TD3SL': TD3SL, 'SACSL': SACSL}[agent_name]
+        sl_kwargs = sac_kwargs if agent_name == 'SACSL' else td3_ddpg_kwargs
+        model = sl_agent('MlpPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
+                         long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction, **sl_kwargs)
     else:
         print("ERROR - no valid agent")
     # Set new logger

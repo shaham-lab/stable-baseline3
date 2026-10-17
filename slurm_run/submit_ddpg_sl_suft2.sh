@@ -5,7 +5,7 @@
 # The long term buffer size is 1M minus the short term buffer size (set in ddpg_sl_suft.sh)
 #
 # By default the short term buffer size and the TF lambda are searched:
-# 3 short buffer sizes * 2 TF lambdas * 1 sampling fraction * 1 batch size * 1 train freq * 5 environments = 30 array tasks (20 runs each, 600 runs)
+# 2 short buffer sizes (1000, 500) * 2 TF lambdas * 1 sampling fraction * 1 batch size (256) * 1 train freq (1) * 5 environments = 20 array tasks (20 runs each, 400 runs)
 # Task order (the task id) is a nested loop: short buffer size -> TF lambda -> sampling fraction -> batch size -> train freq -> environment,
 # so the tasks of the first short buffer size, TF lambda and fraction come first; Slurm starts array tasks roughly in id order
 #
@@ -16,7 +16,7 @@
 #   SHORT_BUFFER_SIZES="1000" ./submit_ddpg_sl_suft2.sh        only these short term buffer sizes
 #   TF_LAMBDAS="1" ./submit_ddpg_sl_suft2.sh                   only these TF lambdas
 #   SAMPLING_FRACTIONS="0.5" ./submit_ddpg_sl_suft2.sh         only these sampling fractions
-#   BATCH_SIZES="32 256" ./submit_ddpg_sl_suft2.sh             these minibatch sizes (default 32)
+#   BATCH_SIZES="32 256" ./submit_ddpg_sl_suft2.sh             these minibatch sizes (default 256)
 #   TRAIN_FREQS="4" ./submit_ddpg_sl_suft2.sh                  these train frequencies (default 1)
 #   DRY_RUN=1 ./submit_ddpg_sl_suft2.sh                        print the sbatch command and every task's combination without submitting
 # The task log is slurm-<job id>_<task id>.out and its first line names the task's combination
