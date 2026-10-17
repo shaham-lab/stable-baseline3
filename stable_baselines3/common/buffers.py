@@ -1727,9 +1727,224 @@ class ShortLongTermPrioritizedReplayBuffer(PrioritizedReplayBuffer):
         return ShortLongTermReplayBuffer.sample_short_and_long(self, batch_size, env)  # type: ignore[arg-type,return-value]
 
 
+class CombinedReplayBuffer(ReplayBuffer):
+    """
+    Combined Experience Replay (CER)
+    Paper: Zhang & Sutton (2017), A Deeper Look at Experience Replay, https://arxiv.org/abs/1712.01275
+
+    Every sampled minibatch contains the latest transition, the rest of the minibatch is sampled uniformly.
+    This makes the agent learn from every new transition right away, and reduces the sensitivity to the replay
+    buffer size.
+    The uniform part is sampled from the older transitions only, so that the latest transitions are not sampled twice
+    in the same minibatch (the paper samples it from the whole buffer, the difference is ``n_latest`` of N rows).
+    As in every buffer of this repo, the uniform part is sampled with replacement.
+
+    ``n_latest`` generalizes it to the latest ``n_latest`` transitions (1 in the paper, where the agent is updated
+    after every step). With ``n_latest = train_freq``, every batch contains all the transitions collected since
+    the previous update, so every transition is replayed at least once even when updating every ``train_freq`` steps
+    (see ``n_latest_from_train_freq()``).
+    With several envs, the latest ``n_latest`` transitions of every env are added (``n_latest * n_envs`` transitions),
+    and the rest of the minibatch is sampled uniformly from the older transitions.
+    The old values (SUFT) are stored and returned as in the ``ReplayBuffer``.
+
+    :param buffer_size: Max number of element in the buffer
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device: PyTorch device
+    :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: Not supported
+    :param handle_timeout_termination: Handle timeout termination (due to timelimit)
+        separately and treat the task as infinite horizon task.
+        https://github.com/DLR-RM/stable-baselines3/issues/284
+    :param n_latest: Number of latest transitions (per env) added to every minibatch (1 in the paper)
+    """
+
+    def __init__(
+        self,
+        buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+        is_dqn: bool = False,
+        n_latest: int = 1,
+    ):
+        super().__init__(buffer_size, observation_space, action_space, device, n_envs, optimize_memory_usage, handle_timeout_termination, is_dqn)
+        if self.optimize_memory_usage:
+            raise NotImplementedError("CombinedReplayBuffer doesn't support optimize_memory_usage=True")
+        assert 1 <= n_latest <= self.buffer_size, f"n_latest must be in [1, buffer size per env], got {n_latest}"
+        self.n_latest = n_latest
+
+    @staticmethod
+    def n_latest_from_train_freq(train_freq: Union[int, tuple[int, str]]) -> int:
+        """
+        Number of transitions (per env) collected between two updates: ``train_freq`` when it is given in steps.
+        With a frequency in episodes the number of transitions varies, so only the latest one is used.
+
+        :param train_freq: The ``train_freq`` argument of the agent (``int`` or ``(frequency, unit)``)
+        :return: The ``n_latest`` that adds all the transitions collected since the previous update to every batch
+        """
+        frequency, unit = (train_freq, "step") if isinstance(train_freq, int) else train_freq
+        if unit != "step":
+            warnings.warn(f"CER: train_freq={train_freq} is not in steps, only the latest transition is added to every batch")
+            return 1
+        return int(frequency)
+
+    def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
+        """
+        Sample the latest ``n_latest`` transitions (of every env), newest first,
+        and the rest of the minibatch uniformly from the older transitions.
+
+        :param batch_size: Number of element to sample (latest transitions included)
+        :param env: associated gym VecEnv
+            to normalize the observations/rewards when sampling
+        :return:
+        """
+        upper_bound = self.buffer_size if self.full else self.pos
+        # The latest n_latest rows (only the ones already collected), newest first, every env of each row
+        n_rows = min(self.n_latest, upper_bound)
+        n_latest_samples = n_rows * self.n_envs
+        assert batch_size >= n_latest_samples, (
+            f"The batch size ({batch_size}) must be at least the number of latest transitions ({n_latest_samples})"
+        )
+        rows = (self.pos - 1 - np.arange(n_rows)) % self.buffer_size
+        latest_inds = np.repeat(rows, self.n_envs)
+        latest_env_indices = np.tile(np.arange(self.n_envs), n_rows)
+        # Uniform samples for the rest of the minibatch, from the older rows only so that the latest transitions
+        # are not sampled twice (unless the buffer holds nothing else yet)
+        n_older_rows = upper_bound - n_rows
+        if n_older_rows > 0:
+            # The older rows, from the oldest one (self.pos when the buffer is full, 0 otherwise)
+            oldest_row = self.pos if self.full else 0
+            uniform_inds = (oldest_row + np.random.randint(0, n_older_rows, size=batch_size - n_latest_samples)) % self.buffer_size
+        else:
+            uniform_inds = np.random.randint(0, upper_bound, size=batch_size - n_latest_samples)
+        uniform_env_indices = np.random.randint(0, high=self.n_envs, size=batch_size - n_latest_samples)
+        batch_inds = np.concatenate([latest_inds, uniform_inds])
+        env_indices = np.concatenate([latest_env_indices, uniform_env_indices])
+        return self._get_combined_samples(batch_inds, env_indices, env)
+
+    def _get_combined_samples(
+        self, batch_inds: np.ndarray, env_indices: np.ndarray, env: Optional[VecNormalize] = None
+    ) -> ReplayBufferSamples:
+        # Same as ReplayBuffer._get_samples(), with the given env indices
+        data = (
+            self._normalize_obs(self.observations[batch_inds, env_indices, :], env),
+            self.actions[batch_inds, env_indices, :],
+            self._normalize_obs(self.next_observations[batch_inds, env_indices, :], env),
+            # Only use dones that are not due to timeouts
+            # deactivated by default (timeouts is initialized as an array of False)
+            (self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices])).reshape(-1, 1),
+            self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env),
+        )
+        if self.is_dqn:
+            # DQN
+            old_values = {
+                "old_values": self.to_torch(self.old_values[batch_inds, env_indices]),
+            }
+        else:
+            # SAC
+            old_values = {
+                "old_values1": self.to_torch(self.old_values1[batch_inds, env_indices]),
+                "old_values2": self.to_torch(self.old_values2[batch_inds, env_indices]),
+            }
+        return ReplayBufferSamples(*tuple(map(self.to_torch, data)), **old_values)
+
+
+class ShortLongTermCombinedReplayBuffer(ShortLongTermReplayBuffer, CombinedReplayBuffer):
+    """
+    ``ShortLongTermReplayBuffer`` with Combined Experience Replay (Zhang & Sutton (2017), https://arxiv.org/abs/1712.01275):
+    both buffers are sampled uniformly, and the latest transition is added to every batch.
+
+    Every new transition is added to the short term buffer (this buffer), and once it is full the oldest one
+    moves to the long term buffer (a uniform ``ReplayBuffer``), as in the ``ShortLongTermReplayBuffer``.
+    The latest transitions are always in the short term buffer: the short term part of every batch is sampled
+    as in the ``CombinedReplayBuffer`` (the latest ``n_latest`` transitions of every env, the rest uniformly),
+    and the long term part uniformly.
+
+    :param short_term_buffer_size: Max number of element in the short term buffer
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device: PyTorch device
+    :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: Not supported
+    :param handle_timeout_termination: Handle timeout termination (due to timelimit)
+        separately and treat the task as infinite horizon task.
+        https://github.com/DLR-RM/stable-baselines3/issues/284
+    :param long_term_buffer_size: Max number of element in the long term buffer
+    :param sampling_fraction: Fraction of each batch taken from the short term buffer
+        (the rest is taken from the long term buffer), see ``sample_short_and_long()``
+    :param n_latest: Number of latest transitions (per env) added to every minibatch (1 in the paper),
+        at most the short term buffer size
+    """
+
+    # add() and reset() are the ones of ShortLongTermReplayBuffer, sample() is the one of CombinedReplayBuffer
+    # (latest transitions + uniform)
+
+    def __init__(
+        self,
+        short_term_buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+        is_dqn: bool = False,
+        long_term_buffer_size: int = 1_000_000,
+        sampling_fraction: float = 0.5,
+        n_latest: int = 1,
+    ):
+        # The short term part is initialized by CombinedReplayBuffer.__init__ (next in the MRO), the long term part
+        # is a uniform ReplayBuffer
+        ShortLongTermReplayBuffer.__init__(
+            self,
+            short_term_buffer_size,
+            observation_space,
+            action_space,
+            device,
+            n_envs,
+            optimize_memory_usage,
+            handle_timeout_termination,
+            is_dqn,
+            long_term_buffer_size=long_term_buffer_size,
+            sampling_fraction=sampling_fraction,
+        )
+        # The latest transitions must all be in the short term buffer
+        assert 1 <= n_latest <= self.buffer_size, f"n_latest must be in [1, short term buffer size per env], got {n_latest}"
+        self.n_latest = n_latest
+
+    def sample_short_and_long(
+        self, batch_size: int, env: Optional[VecNormalize] = None
+    ) -> tuple[Optional[ReplayBufferSamples], Optional[ReplayBufferSamples]]:
+        """
+        Sample elements from the short term and the long term buffers, according to a given ratio
+        (same rule as ``ShortLongTermReplayBuffer.sample_short_and_long()``), with the latest ``n_latest`` transitions
+        (of every env) in the short term part of every batch.
+        The short term part has at least ``n_latest * n_envs`` elements so that it always holds the latest transitions.
+
+        :param batch_size: Number of element to sample (short term + long term)
+        :param env: associated gym VecEnv
+            to normalize the observations/rewards when sampling
+        :return: (short term samples, long term samples), the long term samples are ``None``
+            when nothing is taken from the long term buffer
+        """
+        short_term_batch_size = max(round(batch_size * self.sampling_fraction), self.n_latest * self.n_envs)
+        long_term_batch_size = batch_size - short_term_batch_size
+        if not (self.long_term_buffer.pos >= long_term_batch_size or self.long_term_buffer.full):
+            # Not enough samples in the long term buffer yet: take everything from the short term buffer
+            short_term_batch_size, long_term_batch_size = batch_size, 0
+        # CombinedReplayBuffer.sample(): the latest transitions + uniform short term samples
+        short_term_samples = self.sample(short_term_batch_size, env)
+        long_term_samples = self.long_term_buffer.sample(long_term_batch_size, env) if long_term_batch_size > 0 else None
+        return short_term_samples, long_term_samples
+
+
 def describe_replay_buffer(replay_buffer: ReplayBuffer) -> str:
     """
-    Human readable description of a replay buffer: its kind (uniform / prioritized / n-step) and its size,
+    Human readable description of a replay buffer: its kind (uniform / prioritized / n-step / combined) and its size,
     and for the short term + long term buffers the description of both parts and the sampling fraction.
 
     :param replay_buffer: The replay buffer of an agent
@@ -1743,6 +1958,8 @@ def describe_replay_buffer(replay_buffer: ReplayBuffer) -> str:
             kind = f"uniform sampling, {buffer.n_steps}-step returns (gamma {buffer.gamma})"
         elif isinstance(buffer, NStepLongTermReplayBuffer):
             kind = "uniform sampling, n-step transitions"
+        elif isinstance(buffer, CombinedReplayBuffer):
+            kind = f"combined experience replay (latest {buffer.n_latest} transition(s) per env in every batch, the rest sampled uniformly)"
         else:
             kind = "uniform sampling"
         return f"{kind}, size {buffer.buffer_size * buffer.n_envs}"

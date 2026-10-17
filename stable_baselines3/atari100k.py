@@ -17,6 +17,8 @@ from stable_baselines3.dqn.dqnsl_n_step import DQNSLNStep
 from stable_baselines3.dqn.dqnper import DQNPER
 from stable_baselines3.dqn.dqnsl_per_long import DQNSLPERLong
 from stable_baselines3.dqn.dqnsl_per_both import DQNSLPERBoth
+from stable_baselines3.dqn.dqncer import DQNCER
+from stable_baselines3.dqn.dqnsl_cer import DQNSLCER
 from stable_baselines3.common.callbacks import EvalCallback
 
 import time
@@ -124,6 +126,22 @@ if __name__ == "__main__":
         print("sampling_fraction", sampling_fraction)
         model = DQNSLPERBoth('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
                              long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
+    elif agent_name == 'DQNCER':
+        # optional number of latest transitions in every batch, default train_freq (1 = original CER)
+        cer_n_latest = int(sys.argv[8]) if len(sys.argv) > 8 else None
+        print("cer_n_latest", cer_n_latest if cer_n_latest is not None else "train_freq")
+        model = DQNCER('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=buffer_size,
+                       cer_n_latest=cer_n_latest)
+    elif agent_name == 'DQNSLCER':
+        short_buffer_size = int(sys.argv[8])
+        print("short_buffer_size", short_buffer_size)
+        sampling_fraction = float(sys.argv[9])
+        print("sampling_fraction", sampling_fraction)
+        # optional number of latest transitions in every batch, default train_freq (1 = original CER)
+        cer_n_latest = int(sys.argv[10]) if len(sys.argv) > 10 else None
+        print("cer_n_latest", cer_n_latest if cer_n_latest is not None else "train_freq")
+        model = DQNSLCER('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
+                         long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction, cer_n_latest=cer_n_latest)
 
     else:
         print("ERROR - no valid agent")

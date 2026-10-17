@@ -16,6 +16,8 @@ from stable_baselines3.dqn.dqnsl_n_step import DQNSLNStep
 from stable_baselines3.dqn.dqnper import DQNPER
 from stable_baselines3.dqn.dqnsl_per_long import DQNSLPERLong
 from stable_baselines3.dqn.dqnsl_per_both import DQNSLPERBoth
+from stable_baselines3.dqn.dqncer import DQNCER
+from stable_baselines3.dqn.dqnsl_cer import DQNSLCER
 from stable_baselines3.common.callbacks import EvalCallback
 
 import time
@@ -25,13 +27,15 @@ from datetime import timedelta
 gym.register_envs(ale_py)
 
 if __name__ == "__main__":
-    agent_name = "DQNNStep" # TODO: change this
+    agent_name = "DQNSLCER" # TODO: change this
     buffer_size = 100000 # 100K
     # DQNSL only: short term buffer size and fraction of each batch taken from it (buffer_size is the long term one)
     short_term_buffer_size = 4000 # 4K
     sampling_fraction = 0.5
     # DQNNStep / DQNSLNStep only: n-step return length (Rainbow uses 3)
     n_steps = 3
+    # DQNCER / DQNSLCER only: number of latest transitions in every batch (None: train_freq, 1: original CER)
+    cer_n_latest = None
     timesteps = 100000 # Atari 100K
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     #SUFT
@@ -76,6 +80,12 @@ if __name__ == "__main__":
     elif agent_name == 'DQNSLPERBoth':
         model = DQNSLPERBoth('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
                              long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
+    elif agent_name == 'DQNCER':
+        model = DQNCER('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=buffer_size,
+                       cer_n_latest=cer_n_latest)
+    elif agent_name == 'DQNSLCER':
+        model = DQNSLCER('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
+                         long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction, cer_n_latest=cer_n_latest)
     else:
         print("ERROR - no valid agent")
 
