@@ -1942,9 +1942,123 @@ class ShortLongTermCombinedReplayBuffer(ShortLongTermReplayBuffer, CombinedRepla
         return short_term_samples, long_term_samples
 
 
+class EmphasizingRecentExperienceReplayBuffer(ReplayBuffer):
+    """
+    Emphasizing Recent Experience (ERE)
+    Paper: Wang, Wu, Vuong & Ross (2020), Striving for Simplicity and Performance in Off-Policy DRL:
+    Output Normalization and Non-Uniform Sampling, https://proceedings.mlr.press/v119/wang20x.html
+    (authors' code: https://github.com/AutumnWu/Streamlined-Off-Policy-Learning, ``SOP_ere.py``)
+
+    The updates are done in phases of K updates (after every episode in the paper, with K the episode length).
+    For the k-th update of a phase (k = 0, ..., K - 1), the minibatch is sampled uniformly from the most recent
+
+        c_k = max(N * eta^(k * 1000 / K), c_min)
+
+    transitions, with N the max size of the buffer (capped to the number of stored transitions).
+    The first update of a phase samples from (almost) the whole buffer, the last ones from the most recent data:
+    recent transitions are sampled more often, without forgetting the old ones.
+    ``eta`` is set by the agent (linearly annealed from eta_0 to 1 over the training in the paper,
+    eta = 1 is uniform sampling).
+    The old values (SUFT) are stored and returned as in the ``ReplayBuffer``.
+
+    :param buffer_size: Max number of element in the buffer
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device: PyTorch device
+    :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: Not supported
+    :param handle_timeout_termination: Handle timeout termination (due to timelimit)
+        separately and treat the task as infinite horizon task.
+        https://github.com/DLR-RM/stable-baselines3/issues/284
+    :param eta: Initial eta (0.995 in the paper), updated by the agent during the training
+    :param c_min: Minimum number of recent transitions to sample from (5000 in the paper)
+    """
+
+    def __init__(
+        self,
+        buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+        is_dqn: bool = False,
+        eta: float = 0.995,
+        c_min: int = 5000,
+    ):
+        super().__init__(buffer_size, observation_space, action_space, device, n_envs, optimize_memory_usage, handle_timeout_termination, is_dqn)
+        if self.optimize_memory_usage:
+            raise NotImplementedError("EmphasizingRecentExperienceReplayBuffer doesn't support optimize_memory_usage=True")
+        assert 0.0 < eta <= 1.0, f"eta must be in (0, 1], got {eta}"
+        self.eta = eta
+        self.c_min = c_min
+
+    def recent_window(self, k: int, n_updates: int) -> int:
+        """
+        Number of most recent transitions the k-th of ``n_updates`` updates samples from:
+        c_k = max(N * eta^(k * 1000 / K), c_min), capped to the number of stored transitions.
+
+        :param k: Index of the update in the phase (0 for the first one)
+        :param n_updates: Number of updates K of the phase
+        :return: c_k
+        """
+        max_size = self.buffer_size * self.n_envs
+        c_k = max(int(max_size * self.eta ** (k * 1000 / n_updates)), self.c_min)
+        n_stored = (self.buffer_size if self.full else self.pos) * self.n_envs
+        return min(c_k, n_stored)
+
+    def sample(  # type: ignore[override]
+        self, batch_size: int, env: Optional[VecNormalize] = None, k: int = 0, n_updates: int = 1
+    ) -> ReplayBufferSamples:
+        """
+        Sample uniformly from the c_k most recent transitions (see ``recent_window()``).
+        With the defaults (k = 0, one update) c_k is the whole buffer: uniform sampling.
+
+        :param batch_size: Number of element to sample
+        :param env: associated gym VecEnv
+            to normalize the observations/rewards when sampling
+        :param k: Index of the update in the phase (0 for the first one)
+        :param n_updates: Number of updates K of the phase
+        :return:
+        """
+        c_k = self.recent_window(k, n_updates)
+        # The c_k most recent transitions are the ceil(c_k / n_envs) most recent rows (every env of each row)
+        n_rows = max(1, -(-c_k // self.n_envs))
+        batch_inds = (self.pos - 1 - np.random.randint(0, n_rows, size=batch_size)) % self.buffer_size
+        env_indices = np.random.randint(0, high=self.n_envs, size=batch_size)
+        return self._get_ere_samples(batch_inds, env_indices, env)
+
+    def _get_ere_samples(
+        self, batch_inds: np.ndarray, env_indices: np.ndarray, env: Optional[VecNormalize] = None
+    ) -> ReplayBufferSamples:
+        # Same as ReplayBuffer._get_samples(), with the given env indices
+        data = (
+            self._normalize_obs(self.observations[batch_inds, env_indices, :], env),
+            self.actions[batch_inds, env_indices, :],
+            self._normalize_obs(self.next_observations[batch_inds, env_indices, :], env),
+            # Only use dones that are not due to timeouts
+            # deactivated by default (timeouts is initialized as an array of False)
+            (self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices])).reshape(-1, 1),
+            self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env),
+        )
+        if self.is_dqn:
+            # DQN
+            old_values = {
+                "old_values": self.to_torch(self.old_values[batch_inds, env_indices]),
+            }
+        else:
+            # SAC
+            old_values = {
+                "old_values1": self.to_torch(self.old_values1[batch_inds, env_indices]),
+                "old_values2": self.to_torch(self.old_values2[batch_inds, env_indices]),
+            }
+        return ReplayBufferSamples(*tuple(map(self.to_torch, data)), **old_values)
+
+
 def describe_replay_buffer(replay_buffer: ReplayBuffer) -> str:
     """
-    Human readable description of a replay buffer: its kind (uniform / prioritized / n-step / combined) and its size,
+    Human readable description of a replay buffer: its kind (uniform / prioritized / n-step / combined / ERE) and its size,
     and for the short term + long term buffers the description of both parts and the sampling fraction.
 
     :param replay_buffer: The replay buffer of an agent
@@ -1958,6 +2072,8 @@ def describe_replay_buffer(replay_buffer: ReplayBuffer) -> str:
             kind = f"uniform sampling, {buffer.n_steps}-step returns (gamma {buffer.gamma})"
         elif isinstance(buffer, NStepLongTermReplayBuffer):
             kind = "uniform sampling, n-step transitions"
+        elif isinstance(buffer, EmphasizingRecentExperienceReplayBuffer):
+            kind = f"emphasizing recent experience (ERE, eta {buffer.eta}, c_min {buffer.c_min})"
         elif isinstance(buffer, CombinedReplayBuffer):
             kind = f"combined experience replay (latest {buffer.n_latest} transition(s) per env in every batch, the rest sampled uniformly)"
         else:
