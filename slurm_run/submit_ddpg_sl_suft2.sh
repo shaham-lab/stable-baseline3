@@ -23,10 +23,10 @@
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 read -ra RUN_LIST <<< "${RUNS:-$(seq -s " " 1 20)}"
-read -ra SHORT_BUFFER_LIST <<< "${SHORT_BUFFER_SIZES:-1000 500 2000}"
+read -ra SHORT_BUFFER_LIST <<< "${SHORT_BUFFER_SIZES:-1000 500}"
 read -ra TF_LAMBDA_LIST <<< "${TF_LAMBDAS:-1 0}"
 read -ra SAMPLING_FRACTION_LIST <<< "${SAMPLING_FRACTIONS:-0.5}"
-read -ra BATCH_SIZE_LIST <<< "${BATCH_SIZES:-32}"
+read -ra BATCH_SIZE_LIST <<< "${BATCH_SIZES:-256}"
 read -ra TRAIN_FREQ_LIST <<< "${TRAIN_FREQS:-1}"
 
 # Each run gets one CPU core and 7G (Humanoid peaks at ~5.8G per run), so every array task is sized to the number of runs

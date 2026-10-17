@@ -12,8 +12,8 @@
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 read -ra RUN_LIST <<< "${RUNS:-$(seq -s " " 1 20)}"
-BATCH_SIZE=${BATCH_SIZE:-32}
-read -ra TRAIN_FREQ_LIST <<< "${TRAIN_FREQ:-4 1}"
+BATCH_SIZE=${BATCH_SIZE:-256}
+read -ra TRAIN_FREQ_LIST <<< "${TRAIN_FREQ:-1}"
 
 # Each run gets one CPU core and 7G (Humanoid peaks at ~5.8G per run), so every array task is sized to the number of runs
 N_RUNS=${#RUN_LIST[@]}
