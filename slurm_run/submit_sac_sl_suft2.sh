@@ -1,25 +1,28 @@
 #!/bin/bash
-# Submit sac_sl_suft.sh as a single job array, with one array task per
-# (short buffer size, TF lambda, sampling fraction, batch size, train frequency, environment) combination:
-# each task runs all the runs of its combination in parallel
+# Submit sac_sl_suft.sh as one job array per
+# (short buffer size, TF lambda, sampling fraction, batch size, train frequency, environment) configuration:
+# the runs of the configuration are split into chunks of PARALLEL runs (default 5), one array task per chunk,
+# and each task runs its chunk in parallel, one CPU core and 7G per run
+# (runs 1-20 with PARALLEL=5 -> 4 tasks per array: runs 1-5, 6-10, 11-15, 16-20)
 # The long term buffer size is 1M minus the short term buffer size (set in sac_sl_suft.sh)
 #
-# By default the short term buffer size and the TF lambda are searched:
-# 2 short buffer sizes (1000, 500) * 2 TF lambdas * 1 sampling fraction * 1 batch size (256) * 1 train freq (1) * 5 environments = 20 array tasks (20 runs each, 400 runs)
-# Task order (the task id) is a nested loop: short buffer size -> TF lambda -> sampling fraction -> batch size -> train freq -> environment,
-# so the tasks of the first short buffer size, TF lambda and fraction come first; Slurm starts array tasks roughly in id order
+# By default the short term buffer size is searched:
+# 2 short buffer sizes (1000, 500) * 1 TF lambda (1) * 1 sampling fraction * 1 batch size (256) * 1 train freq (1) * 1 environment (Swimmer)
+# = 2 job arrays of 4 tasks (5 runs each, 40 runs)
+# The arrays are submitted in a nested loop: short buffer size -> TF lambda -> sampling fraction -> batch size -> train freq -> environment
 #
 # Usage:
-#   ./submit_sac_sl_suft2.sh                                  all 5 MuJoCo environments, runs 1-20, the full search
+#   ./submit_sac_sl_suft2.sh                                  Swimmer, runs 1-20, the full search
 #   ./submit_sac_sl_suft2.sh Ant Hopper                       only these environments
 #   RUNS="1 2" ./submit_sac_sl_suft2.sh Ant                   only these runs
 #   SHORT_BUFFER_SIZES="1000" ./submit_sac_sl_suft2.sh        only these short term buffer sizes
-#   TF_LAMBDAS="1" ./submit_sac_sl_suft2.sh                   only these TF lambdas
+#   TF_LAMBDAS="1 0" ./submit_sac_sl_suft2.sh                 these TF lambdas (default 1)
 #   SAMPLING_FRACTIONS="0.5" ./submit_sac_sl_suft2.sh         only these sampling fractions
 #   BATCH_SIZES="32 256" ./submit_sac_sl_suft2.sh             these minibatch sizes (default 256)
 #   TRAIN_FREQS="4" ./submit_sac_sl_suft2.sh                  these train frequencies (default 1)
-#   DRY_RUN=1 ./submit_sac_sl_suft2.sh                        print the sbatch command and every task's combination without submitting
-# The task log is slurm-<job id>_<task id>.out and its first line names the task's combination
+#   PARALLEL=10 ./submit_sac_sl_suft2.sh                      runs per array task, all in parallel (default 5)
+#   DRY_RUN=1 ./submit_sac_sl_suft2.sh                        print the sbatch commands and every task's runs without submitting
+# The task log is slurm-<job id>_<task id>.out and its first line names the task's configuration and runs
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 read -ra RUN_LIST <<< "${RUNS:-$(seq -s " " 1 20)}"
@@ -29,12 +32,16 @@ read -ra SAMPLING_FRACTION_LIST <<< "${SAMPLING_FRACTIONS:-0.5}"
 read -ra BATCH_SIZE_LIST <<< "${BATCH_SIZES:-256}"
 read -ra TRAIN_FREQ_LIST <<< "${TRAIN_FREQS:-1}"
 
-# Each run gets one CPU core and 7G (Humanoid peaks at ~5.8G per run), so every array task is sized to the number of runs
+# Each run gets one CPU core and 7G (Humanoid peaks at ~5.8G per run), so every array task is sized to PARALLEL runs
 N_RUNS=${#RUN_LIST[@]}
+PARALLEL=${PARALLEL:-5}
+(( PARALLEL > N_RUNS )) && PARALLEL=$N_RUNS
+N_CHUNKS=$(( (N_RUNS + PARALLEL - 1) / PARALLEL ))
 MEM_PER_RUN_GB=7
 
 # The MuJoCo (v5) environments
-MUJOCO_ENVS="Ant HalfCheetah Hopper Humanoid Walker2d"
+# MUJOCO_ENVS="Ant HalfCheetah Hopper Humanoid Walker2d"
+MUJOCO_ENVS="Swimmer"
 
 if [ $# -gt 0 ]; then
   read -ra ENV_LIST <<< "$*"
@@ -42,32 +49,29 @@ else
   read -ra ENV_LIST <<< "$MUJOCO_ENVS"
 fi
 
-N_TASKS=$((${#SHORT_BUFFER_LIST[@]} * ${#TF_LAMBDA_LIST[@]} * ${#SAMPLING_FRACTION_LIST[@]} * ${#BATCH_SIZE_LIST[@]} * ${#TRAIN_FREQ_LIST[@]} * ${#ENV_LIST[@]}))
-# sac_sl_suft.sh takes every hyperparameter as a comma separated list and picks one combination per array task
-csv() { local IFS=','; echo "$*"; }
-
-CMD=(sbatch --array="0-$((N_TASKS - 1))" --job-name="sac_sl_suft2"
-     --cpus-per-task="$N_RUNS" --mem="$((N_RUNS * MEM_PER_RUN_GB))G"
-     "$SCRIPT_DIR/sac_sl_suft.sh" "$(csv "${ENV_LIST[@]}")" "$(csv "${SHORT_BUFFER_LIST[@]}")" "$(csv "${TF_LAMBDA_LIST[@]}")"
-     "$(csv "${SAMPLING_FRACTION_LIST[@]}")" "$(csv "${BATCH_SIZE_LIST[@]}")" "$(csv "${TRAIN_FREQ_LIST[@]}")" "${RUN_LIST[@]}")
-if [ -n "$DRY_RUN" ]; then
-  echo "${CMD[@]}"
-  # Same decoding as sac_sl_suft.sh: the environment varies fastest
-  TASK=0
-  for SHORT_BUFFER_SIZE in "${SHORT_BUFFER_LIST[@]}"; do
-    for TF_LAMBDA in "${TF_LAMBDA_LIST[@]}"; do
-      for SAMPLING_FRACTION in "${SAMPLING_FRACTION_LIST[@]}"; do
-        for BATCH_SIZE in "${BATCH_SIZE_LIST[@]}"; do
-          for TRAIN_FREQ in "${TRAIN_FREQ_LIST[@]}"; do
-            for ENV_NAME in "${ENV_LIST[@]}"; do
-              echo "  task $TASK: $ENV_NAME, short buffer $SHORT_BUFFER_SIZE, TF lambda $TF_LAMBDA, fraction $SAMPLING_FRACTION, batch $BATCH_SIZE, train_freq $TRAIN_FREQ"
-              TASK=$((TASK + 1))
-            done
+for SHORT_BUFFER_SIZE in "${SHORT_BUFFER_LIST[@]}"; do
+  for TF_LAMBDA in "${TF_LAMBDA_LIST[@]}"; do
+    for SAMPLING_FRACTION in "${SAMPLING_FRACTION_LIST[@]}"; do
+      for BATCH_SIZE in "${BATCH_SIZE_LIST[@]}"; do
+        for TRAIN_FREQ in "${TRAIN_FREQ_LIST[@]}"; do
+          for ENV_NAME in "${ENV_LIST[@]}"; do
+            # RUNS_PER_TASK makes sac_sl_suft.sh give array task i the i-th chunk of PARALLEL runs
+            CMD=(sbatch --partition=cpu512G-48h --array="0-$((N_CHUNKS - 1))"
+                 --job-name="sac_sl_${ENV_NAME}_s${SHORT_BUFFER_SIZE}_l${TF_LAMBDA}_f${SAMPLING_FRACTION}_b${BATCH_SIZE}_tf${TRAIN_FREQ}"
+                 --cpus-per-task="$PARALLEL" --mem="$((PARALLEL * MEM_PER_RUN_GB))G" --export="ALL,RUNS_PER_TASK=$PARALLEL"
+                 "$SCRIPT_DIR/sac_sl_suft.sh" "$ENV_NAME" "$SHORT_BUFFER_SIZE" "$TF_LAMBDA" "$SAMPLING_FRACTION" "$BATCH_SIZE" "$TRAIN_FREQ"
+                 "${RUN_LIST[@]}")
+            if [ -n "$DRY_RUN" ]; then
+              echo "${CMD[@]}"
+              for ((i = 0; i < N_CHUNKS; i++)); do
+                echo "  task $i: $ENV_NAME, short buffer $SHORT_BUFFER_SIZE, TF lambda $TF_LAMBDA, fraction $SAMPLING_FRACTION, batch $BATCH_SIZE, train_freq $TRAIN_FREQ, runs ${RUN_LIST[*]:$((i * PARALLEL)):PARALLEL}"
+              done
+            else
+              "${CMD[@]}"
+            fi
           done
         done
       done
     done
   done
-else
-  "${CMD[@]}"
-fi
+done

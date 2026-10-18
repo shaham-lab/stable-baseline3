@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=sac_sl_suft
-#SBATCH --partition=cpu192G-48h
-#SBATCH --cpus-per-task=20
-#SBATCH --mem=140G
+#SBATCH --partition=cpu512G-48h
+#SBATCH --cpus-per-task=5
+#SBATCH --mem=35G
 
-# Short-Long SUFT: SACSL on one MuJoCo v5 environment, all the runs in parallel in one job, one CPU core per run
+# Short-Long SUFT: SACSL on one MuJoCo v5 environment, the runs in parallel in one job, one CPU core per run (at most one run per allocated core at a time)
 # The memory is split between a short term and a long term buffer, 1M transitions in total:
 # long term buffer size = 1M - short term buffer size
 # RAM: 7G per run - the 1M transitions take ~6GB for Humanoid (observations + next observations), less for the others
@@ -19,8 +19,11 @@
 # the task id is decoded with <Env> varying fastest, then <train_freq>, <batch_size>, <sampling_fraction>, <tf_lambda>
 # and <short_buffer_size> slowest, so the array is 0..(product of the list lengths)-1
 #        e.g. sbatch --array=0-3 sac_sl_suft.sh Ant,Hopper 4000 1 0.5 32 4,1   (tasks 0-1 train_freq 4, tasks 2-3 train_freq 1)
-# The #SBATCH lines above are sized for 20 runs; for another number of runs pass --cpus-per-task / --mem to sbatch
-# To submit many environments / hyperparameters at once use submit_sac_sl_suft2.sh (one job array, sized to the number of runs)
+# With RUNS_PER_TASK=<n> exported (sbatch --export=ALL,RUNS_PER_TASK=<n>) the runs are split into chunks of n runs:
+# array task i runs chunk i % N_CHUNKS of the combination picked by i / N_CHUNKS
+# The #SBATCH lines above are sized for 5 runs at once (7G each); for another number at once pass --cpus-per-task / --mem to sbatch:
+# the job then runs that many runs at a time and starts the next run as soon as one finishes
+# To submit many environments / hyperparameters at once use submit_sac_sl_suft2.sh (one job array per configuration, one task per chunk of runs)
 
 ENV_NAME=$1
 SHORT_BUFFER_SIZE=$2
@@ -35,9 +38,19 @@ fi
 shift 6
 RUNS=${*:-"$(seq -s " " 1 20)"}
 
+# Job array with RUNS_PER_TASK set (the submit scripts set it): split the runs into chunks of RUNS_PER_TASK runs
+# and give each array task one chunk; the chunk varies fastest in the task id
+TASK_ID=$SLURM_ARRAY_TASK_ID
+if [ -n "$SLURM_ARRAY_TASK_ID" ] && [ -n "$RUNS_PER_TASK" ]; then
+  read -ra RUN_LIST <<< "$RUNS"
+  N_CHUNKS=$(( (${#RUN_LIST[@]} + RUNS_PER_TASK - 1) / RUNS_PER_TASK ))
+  RUNS="${RUN_LIST[*]:$((TASK_ID % N_CHUNKS * RUNS_PER_TASK)):RUNS_PER_TASK}"
+  TASK_ID=$((TASK_ID / N_CHUNKS))
+fi
+
 # Job array: pick this task's combination from the comma separated lists
 if [ -n "$SLURM_ARRAY_TASK_ID" ]; then
-  REST=$SLURM_ARRAY_TASK_ID
+  REST=$TASK_ID
   # pick <variable>: replace the comma separated list in <variable> by its element for this task
   pick() {
     local -n VALUE=$1
@@ -56,7 +69,7 @@ if [ -n "$SLURM_ARRAY_TASK_ID" ]; then
     echo "Array task $SLURM_ARRAY_TASK_ID is past the last combination of the given lists" >&2
     exit 1
   fi
-  echo "Array task $SLURM_ARRAY_TASK_ID: $ENV_NAME, short buffer $SHORT_BUFFER_SIZE, TF lambda $TF_LAMBDA, fraction $SAMPLING_FRACTION, batch $BATCH_SIZE, train_freq $TRAIN_FREQ"
+  echo "Array task $SLURM_ARRAY_TASK_ID: $ENV_NAME, short buffer $SHORT_BUFFER_SIZE, TF lambda $TF_LAMBDA, fraction $SAMPLING_FRACTION, batch $BATCH_SIZE, train_freq $TRAIN_FREQ, runs $RUNS"
 elif [[ "$ENV_NAME$SHORT_BUFFER_SIZE$TF_LAMBDA$SAMPLING_FRACTION$BATCH_SIZE$TRAIN_FREQ" == *,* ]]; then
   echo "Comma separated lists are only allowed in a job array (sbatch --array=...)" >&2
   exit 1
@@ -84,9 +97,13 @@ export PYTHONPATH="$SB3_DIR${PYTHONPATH:+:$PYTHONPATH}"
 mkdir -p "$RESULTS_DIR"
 cd "$SB3_DIR/stable_baselines3" || exit 1
 
-# Start every run in the background, each with its own log file
+# Start the runs in the background, each with its own log file, at most MAX_PARALLEL at a time
+# (one per allocated CPU core unless MAX_PARALLEL is set)
+MAX_PARALLEL=${MAX_PARALLEL:-${SLURM_CPUS_PER_TASK:-5}}
 PIDS=()
 for RUN_NUMBER in $RUNS; do
+  # Wait for a free slot before starting the next run
+  while (( $(jobs -rp | wc -l) >= MAX_PARALLEL )); do wait -n; done
   LOG_FILE="$RESULTS_DIR/${GYM_ENV_NAME}_${AGENT_NAME}_suft_tf_lambda_${TF_LAMBDA}_timesteps_${TIMESTEPS}_short_buffer_${SHORT_BUFFER_SIZE}_long_buffer_${LONG_BUFFER_SIZE}_fraction_${SAMPLING_FRACTION}_batch_${BATCH_SIZE}_train_freq_${TRAIN_FREQ}_run_${RUN_NUMBER}.log"
   $PYTHON "$SB3_DIR/stable_baselines3/mujoco_10M.py" "$DEVICE" "$TF_LAMBDA" "$AGENT_NAME" "$TIMESTEPS" "$RUN_NUMBER" "$GYM_ENV_NAME" "$LONG_BUFFER_SIZE" \
     "$BATCH_SIZE" "$TRAIN_FREQ" "$SHORT_BUFFER_SIZE" "$SAMPLING_FRACTION" \
@@ -94,7 +111,7 @@ for RUN_NUMBER in $RUNS; do
   PIDS+=($!)
 done
 
-# Wait for all the runs; the job fails if any of them failed
+# Wait for all the runs (wait PID still returns the status of a run already reaped by wait -n); the job fails if any of them failed
 STATUS=0
 for PID in "${PIDS[@]}"; do
   wait "$PID" || STATUS=1

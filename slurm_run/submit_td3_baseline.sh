@@ -1,46 +1,53 @@
 #!/bin/bash
-# Submit td3_baseline.sh as a single job array, with one array task per (train frequency, environment) pair:
-# each task runs all the runs of its pair in parallel
+# Submit td3_baseline.sh as one job array per (train frequency, environment) configuration:
+# the runs of the configuration are split into chunks of PARALLEL runs (default 5), one array task per chunk,
+# and each task runs its chunk in parallel, one CPU core and 7G per run
+# (runs 1-20 with PARALLEL=5 -> 4 tasks per array: runs 1-5, 6-10, 11-15, 16-20)
 #
 # Usage:
-#   ./submit_td3_baseline.sh                      all 5 MuJoCo environments, runs 1-20, batch 256, train freq 1 (1 job array, 5 tasks)
-#   ./submit_td3_baseline.sh Ant Hopper           only these environments
+#   ./submit_td3_baseline.sh                      Swimmer, runs 1-20, batch 256, train freq 1 (1 job array, 4 tasks)
+#   ./submit_td3_baseline.sh Ant Hopper           only these environments (one job array each)
 #   RUNS="1 2" ./submit_td3_baseline.sh Ant       only these runs
 #   BATCH_SIZE=32 TRAIN_FREQ="4 1" ./submit_td3_baseline.sh   other minibatch size / train frequencies (default 256 / 1)
-#   DRY_RUN=1 ./submit_td3_baseline.sh            print the sbatch command without submitting
-# Array task i runs environment i % N_ENVS with train frequency i / N_ENVS (0-based); the task log is slurm-<job id>_<task id>.out
+#   PARALLEL=10 ./submit_td3_baseline.sh          runs per array task, all in parallel (default 5)
+#   DRY_RUN=1 ./submit_td3_baseline.sh            print the sbatch commands and every task's runs without submitting
+# The task log is slurm-<job id>_<task id>.out and its first line names the task's configuration and runs
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 read -ra RUN_LIST <<< "${RUNS:-$(seq -s " " 1 20)}"
 BATCH_SIZE=${BATCH_SIZE:-256}
 read -ra TRAIN_FREQ_LIST <<< "${TRAIN_FREQ:-1}"
 
-# Each run gets one CPU core and 7G (Humanoid peaks at ~5.8G per run), so every array task is sized to the number of runs
+# Each run gets one CPU core and 7G (Humanoid peaks at ~5.8G per run), so every array task is sized to PARALLEL runs
 N_RUNS=${#RUN_LIST[@]}
+PARALLEL=${PARALLEL:-5}
+(( PARALLEL > N_RUNS )) && PARALLEL=$N_RUNS
+N_CHUNKS=$(( (N_RUNS + PARALLEL - 1) / PARALLEL ))
 MEM_PER_RUN_GB=7
 
 # The MuJoCo (v5) environments
-MUJOCO_ENVS="Ant HalfCheetah Hopper Humanoid Walker2d"
+# MUJOCO_ENVS="Ant HalfCheetah Hopper Humanoid Walker2d"
+MUJOCO_ENVS="Swimmer"
 
 if [ $# -gt 0 ]; then
   read -ra ENV_LIST <<< "$*"
 else
   read -ra ENV_LIST <<< "$MUJOCO_ENVS"
 fi
-N_ENVS=${#ENV_LIST[@]}
-N_TASKS=$((N_ENVS * ${#TRAIN_FREQ_LIST[@]}))
-# td3_baseline.sh takes the environments and train frequencies as comma separated lists and picks one pair per array task
-ENVS_CSV=$(IFS=','; echo "${ENV_LIST[*]}")
-TRAIN_FREQS_CSV=$(IFS=','; echo "${TRAIN_FREQ_LIST[*]}")
 
-CMD=(sbatch --array="0-$((N_TASKS - 1))" --job-name="td3_base_b${BATCH_SIZE}"
-     --cpus-per-task="$N_RUNS" --mem="$((N_RUNS * MEM_PER_RUN_GB))G"
-     "$SCRIPT_DIR/td3_baseline.sh" "$ENVS_CSV" "$BATCH_SIZE" "$TRAIN_FREQS_CSV" "${RUN_LIST[@]}")
-if [ -n "$DRY_RUN" ]; then
-  echo "${CMD[@]}"
-  for ((i = 0; i < N_TASKS; i++)); do
-    echo "  task $i: ${ENV_LIST[$((i % N_ENVS))]}, train_freq ${TRAIN_FREQ_LIST[$((i / N_ENVS))]}"
+for TRAIN_FREQ in "${TRAIN_FREQ_LIST[@]}"; do
+  for ENV_NAME in "${ENV_LIST[@]}"; do
+    # RUNS_PER_TASK makes td3_baseline.sh give array task i the i-th chunk of PARALLEL runs
+    CMD=(sbatch --partition=cpu512G-48h --array="0-$((N_CHUNKS - 1))" --job-name="td3_base_${ENV_NAME}_b${BATCH_SIZE}_tf${TRAIN_FREQ}"
+         --cpus-per-task="$PARALLEL" --mem="$((PARALLEL * MEM_PER_RUN_GB))G" --export="ALL,RUNS_PER_TASK=$PARALLEL"
+         "$SCRIPT_DIR/td3_baseline.sh" "$ENV_NAME" "$BATCH_SIZE" "$TRAIN_FREQ" "${RUN_LIST[@]}")
+    if [ -n "$DRY_RUN" ]; then
+      echo "${CMD[@]}"
+      for ((i = 0; i < N_CHUNKS; i++)); do
+        echo "  task $i: $ENV_NAME, train_freq $TRAIN_FREQ, runs ${RUN_LIST[*]:$((i * PARALLEL)):PARALLEL}"
+      done
+    else
+      "${CMD[@]}"
+    fi
   done
-else
-  "${CMD[@]}"
-fi
+done
