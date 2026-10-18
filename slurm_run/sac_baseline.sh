@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=sac_base
-#SBATCH --partition=cpu512G-48h
+#SBATCH --partition=shaham-L4
 #SBATCH --cpus-per-task=5
 #SBATCH --mem=35G
 #SBATCH --mail-user=fiskust@biu.ac.il
@@ -65,7 +65,7 @@ DEVICE="cpu"
 TF_LAMBDA=0
 AGENT_NAME="SAC"
 RESULTS_DIR=$SB3_DIR/results/$AGENT_NAME
-TIMESTEPS=1000000
+TIMESTEPS=10000000
 GYM_ENV_NAME="${ENV_NAME}-v5"
 BUFFER_SIZE=1000000
 

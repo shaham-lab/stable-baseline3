@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=sac_sl_suft
-#SBATCH --partition=cpu512G-48h
+#SBATCH --partition=shaham-L4
 #SBATCH --cpus-per-task=5
 #SBATCH --mem=35G
 
@@ -81,7 +81,7 @@ PYTHON=~/miniconda3/envs/stable-baselines3-mujoco/bin/python
 DEVICE="cpu"
 AGENT_NAME="SACSL"
 RESULTS_DIR=$SB3_DIR/results/$AGENT_NAME
-TIMESTEPS=1000000
+TIMESTEPS=10000000
 GYM_ENV_NAME="${ENV_NAME}-v5"
 TOTAL_BUFFER_SIZE=1000000
 LONG_BUFFER_SIZE=$((TOTAL_BUFFER_SIZE - SHORT_BUFFER_SIZE))

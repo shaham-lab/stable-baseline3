@@ -11,6 +11,7 @@
 #   BATCH_SIZE=32 TRAIN_FREQ="4 1" ./submit_td3_baseline.sh   other minibatch size / train frequencies (default 256 / 1)
 #   PARALLEL=10 ./submit_td3_baseline.sh          runs per array task, all in parallel (default 5)
 #   DRY_RUN=1 ./submit_td3_baseline.sh            print the sbatch commands and every task's runs without submitting
+#   PARTITION=L4-12h ./submit_td3_baseline.sh                 another partition (default shaham-L4)
 # The task log is slurm-<job id>_<task id>.out and its first line names the task's configuration and runs
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -24,10 +25,11 @@ PARALLEL=${PARALLEL:-5}
 (( PARALLEL > N_RUNS )) && PARALLEL=$N_RUNS
 N_CHUNKS=$(( (N_RUNS + PARALLEL - 1) / PARALLEL ))
 MEM_PER_RUN_GB=7
+PARTITION=${PARTITION:-shaham-L4}
 
 # The MuJoCo (v5) environments
-# MUJOCO_ENVS="Ant HalfCheetah Hopper Humanoid Walker2d"
-MUJOCO_ENVS="Swimmer"
+MUJOCO_ENVS="Ant HalfCheetah Hopper Humanoid Walker2d Swimmer"
+# MUJOCO_ENVS="Swimmer"
 
 if [ $# -gt 0 ]; then
   read -ra ENV_LIST <<< "$*"
@@ -38,7 +40,7 @@ fi
 for TRAIN_FREQ in "${TRAIN_FREQ_LIST[@]}"; do
   for ENV_NAME in "${ENV_LIST[@]}"; do
     # RUNS_PER_TASK makes td3_baseline.sh give array task i the i-th chunk of PARALLEL runs
-    CMD=(sbatch --partition=cpu512G-48h --array="0-$((N_CHUNKS - 1))" --job-name="td3_base_${ENV_NAME}_b${BATCH_SIZE}_tf${TRAIN_FREQ}"
+    CMD=(sbatch --partition="$PARTITION" --array="0-$((N_CHUNKS - 1))" --job-name="td3_base_${ENV_NAME}_b${BATCH_SIZE}_tf${TRAIN_FREQ}"
          --cpus-per-task="$PARALLEL" --mem="$((PARALLEL * MEM_PER_RUN_GB))G" --export="ALL,RUNS_PER_TASK=$PARALLEL"
          "$SCRIPT_DIR/td3_baseline.sh" "$ENV_NAME" "$BATCH_SIZE" "$TRAIN_FREQ" "${RUN_LIST[@]}")
     if [ -n "$DRY_RUN" ]; then
