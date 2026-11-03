@@ -13,6 +13,7 @@ from stable_baselines3.common.type_aliases import (
     DictRolloutBufferSamples,
     PrioritizedReplayBufferSamples,
     ReplayBufferSamples,
+    ReplayBufferSamplesBound,
     RolloutBufferSamples,
 )
 from stable_baselines3.common.utils import get_device
@@ -1130,6 +1131,159 @@ class ShortLongTermReplayBuffer(ReplayBuffer):
         short_term_samples = self.sample(short_term_batch_size, env) if short_term_batch_size > 0 else None
         long_term_samples = self.long_term_buffer.sample(long_term_batch_size, env) if long_term_batch_size > 0 else None
         return short_term_samples, long_term_samples
+
+
+class ReplayBufferBound(ReplayBuffer):
+    """
+    ``ReplayBuffer`` that also stores when each transition was collected,
+    for the SUFT bound agents (``DQN1SB``):
+    the number of optimizer steps done so far and the number of actions taken so far (``num_timesteps``).
+    The agent sets ``current_optimizer_step`` and ``current_timestep`` before adding a transition,
+    and the samples are ``ReplayBufferSamplesBound`` (``ReplayBufferSamples`` plus both counters).
+
+    Same parameters as ``ReplayBuffer``.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # ``self.optimizer_steps`` is already allocated by ReplayBuffer (and counted in its memory check)
+        # Number of optimizer steps done so far, set by the agent and stored with every new transition
+        self.current_optimizer_step: Union[int, np.ndarray] = 0
+        # Same for the number of actions taken so far (``num_timesteps`` of the agent)
+        self.timesteps = np.zeros((self.buffer_size, self.n_envs), dtype=np.int64)
+        self.current_timestep: Union[int, np.ndarray] = 0
+
+    def add(self, *args, **kwargs) -> None:
+        pos = self.pos
+        super().add(*args, **kwargs)
+        self.optimizer_steps[pos] = self.current_optimizer_step
+        self.timesteps[pos] = self.current_timestep
+
+    def reset(self) -> None:
+        super().reset()
+        self.optimizer_steps[:] = 0
+        self.timesteps[:] = 0
+
+    def oldest_optimizer_step(self) -> int:
+        """
+        Number of optimizer steps done when the oldest transition still in the buffer was collected.
+        """
+        return int(self.optimizer_steps[self.pos if self.full else 0].min())
+
+    def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> ReplayBufferSamplesBound:  # type: ignore[override]
+        return super().sample(batch_size=batch_size, env=env)  # type: ignore[return-value]
+
+    def _get_samples(  # type: ignore[override]
+        self, batch_inds: np.ndarray, env: Optional[VecNormalize] = None
+    ) -> ReplayBufferSamplesBound:
+        # Same as ReplayBuffer._get_samples(), which draws the env indices itself,
+        # so it is repeated here to read both counters at the same env indices
+        env_indices = np.random.randint(0, high=self.n_envs, size=(len(batch_inds),))
+
+        if self.optimize_memory_usage:
+            next_obs = self._normalize_obs(self.observations[(batch_inds + 1) % self.buffer_size, env_indices, :], env)
+        else:
+            next_obs = self._normalize_obs(self.next_observations[batch_inds, env_indices, :], env)
+
+        data = (
+            self._normalize_obs(self.observations[batch_inds, env_indices, :], env),
+            self.actions[batch_inds, env_indices, :],
+            next_obs,
+            # Only use dones that are not due to timeouts
+            # deactivated by default (timeouts is initialized as an array of False)
+            (self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices])).reshape(-1, 1),
+            self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env),
+        )
+        if self.is_dqn:
+            # DQN
+            old_values = {
+                "old_values": self.to_torch(self.old_values[batch_inds, env_indices]),
+            }
+        else:
+            # SAC
+            old_values = {
+                "old_values1": self.to_torch(self.old_values1[batch_inds, env_indices]),
+                "old_values2": self.to_torch(self.old_values2[batch_inds, env_indices]),
+            }
+        return ReplayBufferSamplesBound(
+            *tuple(map(self.to_torch, data)),
+            **old_values,
+            optimizer_steps=self.to_torch(self.optimizer_steps[batch_inds, env_indices]),
+            timesteps=self.to_torch(self.timesteps[batch_inds, env_indices]),
+        )
+
+
+class ShortLongTermReplayBufferBound(ShortLongTermReplayBuffer, ReplayBufferBound):
+    """
+    ``ShortLongTermReplayBuffer`` whose short term and long term buffers are both ``ReplayBufferBound``,
+    for the SUFT bound agents (``DQN1SLSB``): a transition keeps the optimizer step and timestep
+    it was collected at when it moves from the short term to the long term buffer,
+    and both buffers return ``ReplayBufferSamplesBound``.
+
+    Same parameters as ``ShortLongTermReplayBuffer``.
+    """
+
+    long_term_buffer: ReplayBufferBound
+
+    def __init__(
+        self,
+        short_term_buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+        is_dqn: bool = False,
+        long_term_buffer_size: int = 1_000_000,
+        sampling_fraction: float = 0.5,
+    ):
+        # Skip ShortLongTermReplayBuffer.__init__(), which allocates a plain ReplayBuffer as the long term buffer:
+        # the short term buffer is this ReplayBufferBound, and the long term one another ReplayBufferBound
+        ReplayBufferBound.__init__(
+            self,
+            short_term_buffer_size,
+            observation_space,
+            action_space,
+            device,
+            n_envs,
+            optimize_memory_usage,
+            handle_timeout_termination,
+            is_dqn,
+        )
+        if self.optimize_memory_usage:
+            raise NotImplementedError("ShortLongTermReplayBufferBound doesn't support optimize_memory_usage=True")
+
+        self.long_term_buffer = ReplayBufferBound(
+            long_term_buffer_size,
+            observation_space,
+            action_space,
+            device,
+            n_envs,
+            optimize_memory_usage,
+            handle_timeout_termination,
+            is_dqn,
+        )
+        self.sampling_fraction = sampling_fraction
+
+    def add(self, *args, **kwargs) -> None:
+        if self.full:
+            # The oldest transition of the short term buffer moves to the long term buffer
+            # (in ShortLongTermReplayBuffer.add()): keep the optimizer step and timestep it was collected at
+            self.long_term_buffer.current_optimizer_step = self.optimizer_steps[self.pos].copy()
+            self.long_term_buffer.current_timestep = self.timesteps[self.pos].copy()
+        super().add(*args, **kwargs)
+
+    def oldest_optimizer_step(self) -> int:
+        if self.long_term_buffer.size() > 0:
+            # The oldest transitions are the ones that moved to the long term buffer
+            return self.long_term_buffer.oldest_optimizer_step()
+        return super().oldest_optimizer_step()
+
+    def sample_short_and_long(  # type: ignore[override]
+        self, batch_size: int, env: Optional[VecNormalize] = None
+    ) -> tuple[Optional[ReplayBufferSamplesBound], Optional[ReplayBufferSamplesBound]]:
+        return super().sample_short_and_long(batch_size, env)  # type: ignore[return-value]
 
 
 class NStepLongTermReplayBuffer(ReplayBuffer):

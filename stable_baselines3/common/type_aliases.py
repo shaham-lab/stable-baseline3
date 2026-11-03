@@ -61,6 +61,29 @@ class ReplayBufferSamples(NamedTuple):
     discounts: Optional[th.Tensor] = None
 
 
+class ReplayBufferSamplesBound(NamedTuple):
+    """
+    ``ReplayBufferSamples`` plus when each transition was collected,
+    returned by ``ReplayBufferBound`` / ``ShortLongTermReplayBufferBound`` (SUFT bound agents)
+    """
+
+    observations: th.Tensor
+    actions: th.Tensor
+    next_observations: th.Tensor
+    dones: th.Tensor
+    rewards: th.Tensor
+    # Only the fields of the running agent are filled, the others stay None
+    old_values: Optional[th.Tensor] = None  # DQN / DDQN / DQN1
+    old_values1: Optional[th.Tensor] = None  # SAC
+    old_values2: Optional[th.Tensor] = None  # SAC
+    # For n-step replay buffer
+    discounts: Optional[th.Tensor] = None
+    # Number of optimizer steps done when each transition was collected
+    optimizer_steps: Optional[th.Tensor] = None
+    # Number of actions taken (``num_timesteps``) when each transition was collected
+    timesteps: Optional[th.Tensor] = None
+
+
 class PrioritizedReplayBufferSamples(NamedTuple):
     observations: th.Tensor
     actions: th.Tensor
