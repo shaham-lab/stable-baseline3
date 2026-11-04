@@ -63,9 +63,11 @@ if __name__ == "__main__":
         action_noise=NormalActionNoise(mean=np.zeros(n_actions), sigma=0.1 * np.ones(n_actions)),
     )
     sac_kwargs = dict(learning_starts=10000, batch_size=batch_size, train_freq=train_freq)
+    # DDPG / DDPGSL: no exploration noise at all - no random warm-up actions and no action noise
+    ddpg_kwargs = dict(learning_starts=0, batch_size=batch_size, train_freq=train_freq, action_noise=None)
 
     if agent_name == 'DDPG':
-        model = DDPG('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size, **td3_ddpg_kwargs)
+        model = DDPG('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size, **ddpg_kwargs)
     elif agent_name == 'TD3':
         model = TD3('MlpPolicy', env, verbose=2, device=run_device, buffer_size=buffer_size, **td3_ddpg_kwargs)
     elif agent_name == 'SAC':
@@ -77,7 +79,7 @@ if __name__ == "__main__":
         sampling_fraction = float(sys.argv[11])
         print("sampling_fraction", sampling_fraction)
         sl_agent = {'DDPGSL': DDPGSL, 'TD3SL': TD3SL, 'SACSL': SACSL}[agent_name]
-        sl_kwargs = sac_kwargs if agent_name == 'SACSL' else td3_ddpg_kwargs
+        sl_kwargs = {'DDPGSL': ddpg_kwargs, 'TD3SL': td3_ddpg_kwargs, 'SACSL': sac_kwargs}[agent_name]
         model = sl_agent('MlpPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
                          long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction, **sl_kwargs)
     else:
