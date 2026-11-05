@@ -93,8 +93,11 @@ if __name__ == "__main__":
         # optional, keeps a copy of the weights per gradient update (too much memory with a big buffer)
         track_behavior_distance = sys.argv[8].lower() in ("true", "1") if len(sys.argv) > 8 else False
         print("track_behavior_distance", track_behavior_distance)
+        # optional gradient updates per environment step (1, 2, 4, 8, 16, ...), default 0.25 (1 update every 4 steps)
+        replay_ratio = float(sys.argv[9]) if len(sys.argv) > 9 else None
+        print("replay_ratio", replay_ratio if replay_ratio is not None else "default (0.25)")
         model = DQN1SB('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=buffer_size,
-                       track_behavior_distance=track_behavior_distance)
+                       track_behavior_distance=track_behavior_distance, replay_ratio=replay_ratio)
     elif agent_name == 'DQN1SLSB':
         short_buffer_size = int(sys.argv[8])
         print("short_buffer_size", short_buffer_size)
@@ -103,9 +106,12 @@ if __name__ == "__main__":
         # optional, keeps a copy of the weights per gradient update (too much memory with a big buffer)
         track_behavior_distance = sys.argv[10].lower() in ("true", "1") if len(sys.argv) > 10 else False
         print("track_behavior_distance", track_behavior_distance)
+        # optional gradient updates per environment step (1, 2, 4, 8, 16, ...), default 0.25 (1 update every 4 steps)
+        replay_ratio = float(sys.argv[11]) if len(sys.argv) > 11 else None
+        print("replay_ratio", replay_ratio if replay_ratio is not None else "default (0.25)")
         model = DQN1SLSB('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
                          long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction,
-                         track_behavior_distance=track_behavior_distance)
+                         track_behavior_distance=track_behavior_distance, replay_ratio=replay_ratio)
     elif agent_name == 'DDQNSL':
         short_buffer_size = int(sys.argv[8])
         print("short_buffer_size", short_buffer_size)

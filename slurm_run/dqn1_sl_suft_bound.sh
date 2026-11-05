@@ -15,12 +15,16 @@
 #
 # Usage: sbatch dqn1_sl_suft_bound.sh <sampling_fraction> <Game> <run_number> <config>
 #        e.g. sbatch dqn1_sl_suft_bound.sh 0.5 Alien 1 4000:1
+#             sbatch dqn1_sl_suft_bound.sh 0.5 Alien 1 4000:1:false:4      (replay ratio 4)
 # <sampling_fraction> is the fraction of each minibatch taken from the short term buffer
 # <Game> is the ALE name without prefix/suffix (Alien, KungFuMaster, ...)
-# <config> is <short_buffer_size>:<tf_lambda>[:<track_behavior_distance>]
+# <config> is <short_buffer_size>:<tf_lambda>[:<track_behavior_distance>[:<replay_ratio>]]
 # <track_behavior_distance> true/false (default false): also print the distance from the weights each sample
 #   was collected with; it keeps a copy of the weights (~6.7MB) per gradient update still referenced by
 #   the replay buffers, so it doesn't fit with a 1M long term buffer
+# <replay_ratio> (default 0.25): gradient updates per environment step, 1, 2, 4, 8, 16, ... (that many updates
+#   after every step) or 0.25, 0.5, ... (one update every 4, 2, ... steps); the default 0.25 is the original
+#   1 update every 4 steps. A higher ratio is that many times more updates and log lines (and run time)
 # As a job array pass one <config> per array task: task i runs the i-th <config> (0-based)
 #        e.g. sbatch --array=0-1 dqn1_sl_suft_bound.sh 0.5 Alien 1 500:0 500:1
 # To submit all the SUFT bound configurations at once use submit_dqn1_suft_bound.sh
@@ -48,10 +52,11 @@ elif [ ${#CONFIGS[@]} -gt 1 ]; then
 else
   CONFIG=${CONFIGS[0]}
 fi
-IFS=':' read -r SHORT_BUFFER_SIZE TF_LAMBDA TRACK_BEHAVIOR_DISTANCE <<< "$CONFIG"
+IFS=':' read -r SHORT_BUFFER_SIZE TF_LAMBDA TRACK_BEHAVIOR_DISTANCE REPLAY_RATIO <<< "$CONFIG"
 TRACK_BEHAVIOR_DISTANCE=${TRACK_BEHAVIOR_DISTANCE:-false}
+REPLAY_RATIO=${REPLAY_RATIO:-0.25}
 if [ -z "$SHORT_BUFFER_SIZE" ] || [ -z "$TF_LAMBDA" ]; then
-  echo "Bad <config> '$CONFIG', expected <short_buffer_size>:<tf_lambda>[:<track_behavior_distance>]" >&2
+  echo "Bad <config> '$CONFIG', expected <short_buffer_size>:<tf_lambda>[:<track_behavior_distance>[:<replay_ratio>]]" >&2
   exit 1
 fi
 
@@ -65,7 +70,7 @@ TIMESTEPS=1000000
 TOTAL_BUFFER_SIZE=1000000
 LONG_BUFFER_SIZE=$((TOTAL_BUFFER_SIZE - SHORT_BUFFER_SIZE))
 GYM_ENV_NAME="ALE/${GAME}-v5"
-echo "${SLURM_ARRAY_TASK_ID:+Array task $SLURM_ARRAY_TASK_ID: }$GAME run $RUN_NUMBER, short buffer $SHORT_BUFFER_SIZE, long buffer $LONG_BUFFER_SIZE, TF lambda $TF_LAMBDA, fraction $SAMPLING_FRACTION, track behavior distance $TRACK_BEHAVIOR_DISTANCE"
+echo "${SLURM_ARRAY_TASK_ID:+Array task $SLURM_ARRAY_TASK_ID: }$GAME run $RUN_NUMBER, short buffer $SHORT_BUFFER_SIZE, long buffer $LONG_BUFFER_SIZE, TF lambda $TF_LAMBDA, fraction $SAMPLING_FRACTION, track behavior distance $TRACK_BEHAVIOR_DISTANCE, replay ratio $REPLAY_RATIO"
 
 # One core for the run: stop PyTorch / NumPy from spawning extra threads
 export OMP_NUM_THREADS=1
@@ -78,7 +83,7 @@ export PYTHONPATH="$SB3_DIR${PYTHONPATH:+:$PYTHONPATH}"
 mkdir -p "$RESULTS_DIR"
 cd "$SB3_DIR/stable_baselines3" || exit 1
 
-LOG_FILE="$RESULTS_DIR/${GAME}-v5_${AGENT_NAME}_suft_tf_lambda_${TF_LAMBDA}_timesteps_${TIMESTEPS}_short_buffer_${SHORT_BUFFER_SIZE}_long_buffer_${LONG_BUFFER_SIZE}_fraction_${SAMPLING_FRACTION}_track_${TRACK_BEHAVIOR_DISTANCE}_run_${RUN_NUMBER}.log"
+LOG_FILE="$RESULTS_DIR/${GAME}-v5_${AGENT_NAME}_suft_tf_lambda_${TF_LAMBDA}_timesteps_${TIMESTEPS}_short_buffer_${SHORT_BUFFER_SIZE}_long_buffer_${LONG_BUFFER_SIZE}_fraction_${SAMPLING_FRACTION}_track_${TRACK_BEHAVIOR_DISTANCE}_replay_ratio_${REPLAY_RATIO}_run_${RUN_NUMBER}.log"
 $PYTHON "$SB3_DIR/stable_baselines3/atari100k.py" "$DEVICE" "$TF_LAMBDA" "$AGENT_NAME" "$TIMESTEPS" "$RUN_NUMBER" "$GYM_ENV_NAME" "$LONG_BUFFER_SIZE" \
-  "$SHORT_BUFFER_SIZE" "$SAMPLING_FRACTION" "$TRACK_BEHAVIOR_DISTANCE" \
+  "$SHORT_BUFFER_SIZE" "$SAMPLING_FRACTION" "$TRACK_BEHAVIOR_DISTANCE" "$REPLAY_RATIO" \
   > "$LOG_FILE" 2>&1

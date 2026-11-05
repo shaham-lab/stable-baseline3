@@ -11,6 +11,7 @@ from stable_baselines3.common.off_policy_algorithm import OffPolicyAlgorithm
 from stable_baselines3.common.policies import BasePolicy
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, ReplayBufferSamplesBound, Schedule
 from stable_baselines3.common.utils import LinearSchedule, get_parameters_by_name, polyak_update
+from stable_baselines3.dqn.dqn1_suft_bound import replay_ratio_to_train_freq
 from stable_baselines3.dqn.policies import CnnPolicy, DQNPolicy, MlpPolicy, MultiInputPolicy, QNetwork
 
 SelfDQN1SLSB = TypeVar("SelfDQN1SLSB", bound="DQN1SLSB")
@@ -63,6 +64,9 @@ class DQN1SLSB(OffPolicyAlgorithm):
         of the behavior policy of each sample of the minibatch (the gradient updates, actions taken
         and timesteps differences are always printed). It keeps a full copy of the weights
         for every optimizer step still referenced by the replay buffer, which takes a lot of memory.
+    :param replay_ratio: Gradient updates per environment step (1, 2, 4, 8, 16, ... or 0.25, 0.5, ...),
+        see ``replay_ratio_to_train_freq()``. When given it overrides ``train_freq`` and ``gradient_steps``,
+        ``None`` keeps them (the default ``train_freq=4, gradient_steps=1`` is a replay ratio of 0.25)
     """
 
     policy_aliases: ClassVar[dict[str, type[BasePolicy]]] = {
@@ -112,7 +116,10 @@ class DQN1SLSB(OffPolicyAlgorithm):
         tf_lambda: float = 0.0,  # SUFT CHANGE
         cold_buffer_size: int = 100,
         track_behavior_distance: bool = False,
+        replay_ratio: Optional[float] = None,
     ) -> None:
+        if replay_ratio is not None:
+            train_freq, gradient_steps = replay_ratio_to_train_freq(replay_ratio)
         # Short term and long term replay buffer, `buffer_size` is the size of the short term one
         replay_buffer_kwargs = {
             **(replay_buffer_kwargs or {}),
@@ -150,6 +157,7 @@ class DQN1SLSB(OffPolicyAlgorithm):
         print("long term buffer size", long_term_buffer_size)
         print("sampling fraction", sampling_fraction)
         print("TF lambda", tf_lambda)
+        print("replay ratio", replay_ratio, "train freq", train_freq, "gradient steps", gradient_steps)
         self.exploration_initial_eps = exploration_initial_eps
         self.exploration_final_eps = exploration_final_eps
         self.exploration_fraction = exploration_fraction

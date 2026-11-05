@@ -40,6 +40,8 @@ if __name__ == "__main__":
     cer_n_latest = None
     # DQN1SB / DQN1SLSB only: keeps a copy of the weights per gradient update (too much memory with a big buffer)
     track_behavior_distance = False
+    # DQN1SB / DQN1SLSB only: gradient updates per environment step (1, 2, 4, 8, 16, ...), None: 0.25 (1 every 4 steps)
+    replay_ratio = None
     timesteps = 1000000 # Atari 100K
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     #SUFT
@@ -69,11 +71,11 @@ if __name__ == "__main__":
                       long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
     elif agent_name == 'DQN1SB':
         model = DQN1SB('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=buffer_size,
-                       track_behavior_distance=track_behavior_distance)
+                       track_behavior_distance=track_behavior_distance, replay_ratio=replay_ratio)
     elif agent_name == 'DQN1SLSB':
         model = DQN1SLSB('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
                          long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction,
-                         track_behavior_distance=track_behavior_distance)
+                         track_behavior_distance=track_behavior_distance, replay_ratio=replay_ratio)
     elif agent_name == 'DDQNSL':
         model = DDQNSL('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
                       long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)

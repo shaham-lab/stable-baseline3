@@ -16,6 +16,27 @@ from stable_baselines3.dqn.policies import CnnPolicy, DQNPolicy, MlpPolicy, Mult
 SelfDQN1SB = TypeVar("SelfDQN1SB", bound="DQN1SB")
 
 
+def replay_ratio_to_train_freq(replay_ratio: float) -> tuple[int, int]:
+    """
+    Convert a replay ratio (gradient updates per environment step) to ``train_freq`` and ``gradient_steps``.
+
+    :param replay_ratio: Gradient updates per environment step: a positive integer (1, 2, 4, 8, 16, ...),
+        ``replay_ratio`` gradient updates after every step, or one over an integer (0.25, 0.5, ...),
+        one gradient update every ``1 / replay_ratio`` steps
+    :return: ``train_freq`` (in steps) and ``gradient_steps``
+    """
+    if replay_ratio <= 0:
+        raise ValueError(f"The replay ratio must be positive, got {replay_ratio}")
+    if replay_ratio >= 1:
+        if replay_ratio != int(replay_ratio):
+            raise ValueError(f"A replay ratio >= 1 must be an integer, got {replay_ratio}")
+        return 1, int(replay_ratio)
+    train_freq = round(1 / replay_ratio)
+    if not np.isclose(train_freq * replay_ratio, 1):
+        raise ValueError(f"A replay ratio < 1 must be one over an integer, got {replay_ratio}")
+    return train_freq, 1
+
+
 class DQN1SB(OffPolicyAlgorithm):
     """
     Deep Q-Network (DQN- 2013)
@@ -70,6 +91,9 @@ class DQN1SB(OffPolicyAlgorithm):
         of the behavior policy of each sample of the minibatch (the gradient updates, actions taken
         and timesteps differences are always printed). It keeps a full copy of the weights
         for every optimizer step still referenced by the replay buffer, which takes a lot of memory.
+    :param replay_ratio: Gradient updates per environment step (1, 2, 4, 8, 16, ... or 0.25, 0.5, ...),
+        see ``replay_ratio_to_train_freq()``. When given it overrides ``train_freq`` and ``gradient_steps``,
+        ``None`` keeps them (the default ``train_freq=4, gradient_steps=1`` is a replay ratio of 0.25)
     """
 
     policy_aliases: ClassVar[dict[str, type[BasePolicy]]] = {
@@ -120,7 +144,10 @@ class DQN1SB(OffPolicyAlgorithm):
         tf_lambda: float = 0.0,  # SUFT CHANGE
         cold_buffer_size: int = 100,
         track_behavior_distance: bool = False,
+        replay_ratio: Optional[float] = None,
     ) -> None:
+        if replay_ratio is not None:
+            train_freq, gradient_steps = replay_ratio_to_train_freq(replay_ratio)
         if replay_buffer_class is None and n_steps == 1:
             # Store when each transition was collected (the optimizer step and the timestep), see ReplayBufferBound
             replay_buffer_class = ReplayBufferBound
@@ -154,6 +181,7 @@ class DQN1SB(OffPolicyAlgorithm):
         print("Loss", "MSE")
         print("buffer size", buffer_size)
         print("TF lambda", tf_lambda)
+        print("replay ratio", replay_ratio, "train freq", train_freq, "gradient steps", gradient_steps)
         self.exploration_initial_eps = exploration_initial_eps
         self.exploration_final_eps = exploration_final_eps
         self.exploration_fraction = exploration_fraction
