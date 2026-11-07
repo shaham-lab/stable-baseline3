@@ -39,6 +39,7 @@ Outputs (in --out-dir, default <results-dir>/Atari_analysis):
     figures/games_<cfg>_<eval|train>.png      the 57 games, baseline vs configuration (mean +- s.e. over runs),
                                               random (gray) and human (red) scores as dashed lines
     figures/iqm_curves_<eval|train>.png       IQM HNS vs steps, baseline vs configuration (95% CI)
+    figures/mean_curves_<eval|train>.png      mean HNS vs steps, baseline vs configuration (95% CI)
     figures/aggregate_<eval|train>.png        HNS mean / median / IQM / optimality gap with 95% CIs
     figures/ratio_heatmap_<eval|train>.png    per-game ratio (agent - random) / (baseline - random)
     figures/prob_improvement.png              P(agent > baseline) with 95% CIs
@@ -74,6 +75,7 @@ KIND_DIRS = {"Baseline": "baseline", "SUFT": "suft"}
 EXCLUDED_AGENTS = {"BBF", "DDPG", "DDPGSL", "SAC", "SACSL", "TD3", "TD3SL"}
 # SUFT agent -> baseline agent
 BASELINE_OF = {
+    "DQN1": "DQN1",  # DQN1 + SUFT term on the single buffer (SUFT/DQN1, logs named "baseline" with tf_lambda > 0)
     "DQNSL": "DQN",
     "DDQNSL": "DDQN",
     "DQN1SL": "DQN1",
@@ -242,9 +244,11 @@ def build_runs(parsed: dict[str, dict]) -> pd.DataFrame:
             print(f"skip (not an Atari-57 log): {os.path.basename(path)}")
             continue
         cfg = parse_cfg(m["cfg"])
+        # A "baseline" agent run with the SUFT term (tf_lambda > 0, e.g. SUFT/DQN1) is a SUFT configuration
+        kind = "suft" if m["kind"] == "suft" or cfg["lam"] > 0 else "baseline"
         has_eval, has_train = len(d["eval_t"]) > 0, len(d["train_t"]) > 0
         rows.append({
-            "path": path, "config": f"{m['agent']}_{m['kind']}_{m['cfg']}", "agent": m["agent"], "kind": m["kind"],
+            "path": path, "config": f"{m['agent']}_{kind}_{m['cfg']}", "agent": m["agent"], "kind": kind,
             "env": m["env"], "game": m["game"], "run": int(m["run"]), **cfg,
             "finished": d["finished"], "n_evals": len(d["eval_t"]),
             "last_eval_step": d["eval_t"][-1] if has_eval else np.nan,
@@ -285,7 +289,8 @@ def build_configs(runs: pd.DataFrame) -> pd.DataFrame:
             cands = cfgs[(cfgs.agent == r.agent) & (cfgs.lam == 0)]
             cands = [c for c, q in cands.iterrows()
                      if all(same(q[k], r[k]) for k in ("timesteps", "short", "long", "fraction", "n_steps", "cer"))]
-            ablation[cid] = cands[0] if cands else None
+            # Same agent at lambda = 0 that is already its baseline (e.g. DQN1): no separate ablation
+            ablation[cid] = cands[0] if cands and cands[0] != baseline[cid] else None
     cfgs["baseline"] = pd.Series(baseline)
     cfgs["lambda0"] = pd.Series(ablation)
 
@@ -543,8 +548,14 @@ def plot_games(envs, rnd, hum, tensors, labels, grid, title, path):
     save(fig, path)
 
 
-def iqm_curve(S: np.ndarray, n_boot: int, rng):
-    """IQM over (runs, games) at every step of S (runs, games, steps) with a 95% bootstrap CI."""
+CURVE_METRICS = {"iqm": "IQM", "mean": "Mean"}
+
+
+def agg_curve(S: np.ndarray, n_boot: int, rng, metric: str = "iqm"):
+    """
+    ``metric`` ("iqm" or "mean") of the HNS over (runs, games) at every step of S (runs, games, steps),
+    with a 95% stratified bootstrap CI. Mean: mean over the games of the per-game mean over runs (as ``agg_metrics``).
+    """
     keep = np.isfinite(S).all(axis=(0, 1))
     S = S[:, :, keep]
 
@@ -554,11 +565,16 @@ def iqm_curve(S: np.ndarray, n_boot: int, rng):
         k = int(0.25 * n)
         return flat[..., k:n - k, :].mean(-2)
 
-    boot = iqm(stratified_bootstrap(S, n_boot, rng))
-    return keep, iqm(S), np.percentile(boot, 2.5, axis=0), np.percentile(boot, 97.5, axis=0)
+    def mean(X):  # (..., runs, games, steps)
+        return X.mean(-3).mean(-2)
+
+    f = {"iqm": iqm, "mean": mean}[metric]
+    boot = f(stratified_bootstrap(S, n_boot, rng))
+    return keep, f(S), np.percentile(boot, 2.5, axis=0), np.percentile(boot, 97.5, axis=0)
 
 
-def plot_iqm_curves(pairs, curves, cfgs, grid, which, n_boot, rng, path):
+def plot_agg_curves(pairs, curves, cfgs, grid, which, n_boot, rng, path, metric="iqm"):
+    name = CURVE_METRICS[metric]
     n = len(pairs)
     ncols = min(3, n)
     nrows = math.ceil(n / ncols)
@@ -567,18 +583,18 @@ def plot_iqm_curves(pairs, curves, cfgs, grid, which, n_boot, rng, path):
     for ax, (c, b) in zip(axes.flat, pairs):
         style(ax)
         for cfg, color in ((b, BASE_COLOR), (c, AGENT_COLOR)):
-            keep, m, lo, hi = iqm_curve(curves[cfg], n_boot, rng)
+            keep, m, lo, hi = agg_curve(curves[cfg], n_boot, rng, metric)
             x = grid[keep] / 1e6
             ax.fill_between(x, lo, hi, color=color, alpha=0.2, linewidth=0)
             ax.plot(x, m, color=color, linewidth=1.6, label=cfgs.label[cfg],
                     marker="o" if len(x) <= 20 else None, markersize=3)
         ax.set_title(f"{cfgs.label[c]}  vs  {cfgs.label[b]}", fontsize=8, color=TEXT, loc="left")
         ax.set_xlabel("steps (M)", fontsize=7, color=TEXT_2)
-        ax.set_ylabel("IQM human normalized score", fontsize=7, color=TEXT_2)
+        ax.set_ylabel(f"{name} human normalized score", fontsize=7, color=TEXT_2)
         ax.legend(frameon=False, fontsize=7)
     for ax in list(axes.flat)[n:]:
         ax.axis("off")
-    fig.suptitle(f"IQM HNS vs steps ({'evaluation' if which == 'eval' else 'training'} score, 95% stratified "
+    fig.suptitle(f"{name} HNS vs steps ({'evaluation' if which == 'eval' else 'training'} score, 95% stratified "
                  f"bootstrap CI)", fontsize=10, color=TEXT, x=0.01, ha="left")
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     save(fig, path)
@@ -860,7 +876,7 @@ def main():
     parser.add_argument("--results-dir", default=DEFAULT_RESULTS_DIR)
     parser.add_argument("--out-dir", default=None, help="default: <results-dir>/Atari_analysis")
     parser.add_argument("--bootstrap", type=int, default=2000, help="bootstrap samples of the CIs")
-    parser.add_argument("--curve-bootstrap", type=int, default=500, help="bootstrap samples of the IQM curves")
+    parser.add_argument("--curve-bootstrap", type=int, default=500, help="bootstrap samples of the IQM / mean curves")
     parser.add_argument("--grid-step", type=int, default=10_000, help="steps between the points of the training curves")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--workers", type=int, default=min(8, os.cpu_count() or 1), help="processes parsing the logs")
@@ -917,9 +933,10 @@ def main():
                 figures.append(path)
                 print(f"  {os.path.basename(path)}")
             norm = {c: (T - rnd[None, :, None]) / (hum - rnd)[None, :, None] for c, T in curves.items()}
-            path = os.path.join(fig_dir, f"iqm_curves_{which}.png")
-            plot_iqm_curves(pairs, norm, cfgs, grid, which, args.curve_bootstrap, rng, path)
-            figures.append(path)
+            for metric in CURVE_METRICS:
+                path = os.path.join(fig_dir, f"{metric}_curves_{which}.png")
+                plot_agg_curves(pairs, norm, cfgs, grid, which, args.curve_bootstrap, rng, path, metric)
+                figures.append(path)
             path = os.path.join(fig_dir, f"aggregate_{which}.png")
             plot_aggregate(aggregate, cfgs, which, path)
             figures.append(path)

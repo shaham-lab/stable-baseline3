@@ -44,6 +44,7 @@ Output: <out-dir>/<agent>_<no_SUFT|SUFT>/<N>_<y>[_short_term|_long_term]_vs_<x>.
 Usage:
     python stable_baselines3/plots/bound_figures.py
     python stable_baselines3/plots/bound_figures.py --results-dir <dir> --out-dir <dir> [--linear-y] [--points]
+    python stable_baselines3/plots/bound_figures.py --figures 2 5 --max-updates 50000   (-> <results-dir>/figures_50K)
 """
 
 import argparse
@@ -256,10 +257,11 @@ def label_line_ends(ax, ends, log_y):
 
 
 def plot_figure(series, y_key, x_key, title, out_path, log_y, points, max_points, y_label=None, no_train_steps=100,
-                hline=None):
+                hline=None, max_updates=None):
     """
     ``series``: list of (label, color, terms) where terms is the output of ``terms_of()``.
     ``hline``: optional (y, label) of a horizontal dashed reference line.
+    ``max_updates``: optional, keep only the values with x <= max_updates gradient updates (before the shift).
     """
     fig, ax = plt.subplots(figsize=(8, 4.8), dpi=150)
     fig.patch.set_facecolor(SURFACE)
@@ -275,6 +277,8 @@ def plot_figure(series, y_key, x_key, title, out_path, log_y, points, max_points
         for term, s in terms[:1] if shared else terms:
             x, y = s[x_key], s[y_key]
             mask = np.isfinite(x) & np.isfinite(y)
+            if max_updates is not None:
+                mask &= x <= max_updates
             if log_y:
                 mask &= y > 0
             x, y = x[mask], y[mask]
@@ -302,6 +306,8 @@ def plot_figure(series, y_key, x_key, title, out_path, log_y, points, max_points
                 my_key, mx_key, _ = MARKERS[y_key]
                 mx, my = s[mx_key], s[my_key]
                 m_mask = np.isfinite(mx) & np.isfinite(my)
+                if max_updates is not None:
+                    m_mask &= mx <= max_updates
                 if m_mask.any():
                     has_markers = True
                     ax.scatter(mx[m_mask] + (shift if x_key in UPDATE_KEYS else 0), my[m_mask], s=22,
@@ -387,8 +393,13 @@ def main():
                         help="points (i, 0), i = 0 .. N-1, added before the first gradient update (learning_starts)")
     parser.add_argument("--random-score", type=float, default=None,
                         help="score of the random policy drawn in the score figure (default: per env, RANDOM_SCORES)")
+    parser.add_argument("--figures", type=int, nargs="+", default=None,
+                        help=f"numbers of the figures to plot (default: all, {[f[0] for f in FIGURES]})")
+    parser.add_argument("--max-updates", type=float, default=None,
+                        help="plot only the first N gradient updates (default: all; e.g. 50000)")
     args = parser.parse_args()
-    out_dir = args.out_dir or os.path.join(args.results_dir, "figures")
+    out_dir = args.out_dir or os.path.join(
+        args.results_dir, "figures" if args.max_updates is None else f"figures_{human(args.max_updates)}")
 
     logs = []
     for root, _, files in os.walk(args.results_dir):
@@ -430,12 +441,16 @@ def main():
         suft = "SUFT" if lam else "no_SUFT"
         cfg0 = members[0][0]
         title = f"{cfg0['env']}  {agent}  {'SUFT' if lam else 'no SUFT'} (tf_lambda={lam:g})"
+        if args.max_updates is not None:
+            title += f"  ·  first {human(args.max_updates)} updates"
         subtitle = "" if cfg0["fraction"] is None else \
             f"\nsampling fraction {cfg0['fraction']:g}, long buffer = 1M − short buffer"
         fig_dir = os.path.join(out_dir, f"{agent}_{suft}")
         os.makedirs(fig_dir, exist_ok=True)
         terms = [term for term, _ in series[0][2]]
         for i, y_key, x_key in FIGURES:
+            if args.figures is not None and i not in args.figures:
+                continue
             log_y = y_key in LOG_Y and not args.linear_y
             if y_key in SHARED_KEYS or len(terms) == 1:
                 out_path = os.path.join(fig_dir, f"{i}_{y_key}_vs_{x_key}.png")
@@ -446,7 +461,7 @@ def main():
                     if random_score is not None:
                         hline = (random_score, f"random score {random_score:g}")
                 plot_figure(series, y_key, x_key, title + subtitle, out_path, log_y, args.points, args.max_points,
-                            no_train_steps=args.no_train_steps, hline=hline)
+                            no_train_steps=args.no_train_steps, hline=hline, max_updates=args.max_updates)
                 n_figures += 1
                 continue
             # Short and long term SUFT Q: one figure each
@@ -455,7 +470,7 @@ def main():
                 out_path = os.path.join(fig_dir, f"{i}_{y_key}_{term.replace(' ', '_')}_vs_{x_key}.png")
                 plot_figure(term_series, y_key, x_key, f"{title}  ·  {term}{subtitle}", out_path, log_y,
                             args.points, args.max_points, y_label=f"SUFT Q  (current {term} SUFT mean)",
-                            no_train_steps=args.no_train_steps)
+                            no_train_steps=args.no_train_steps, max_updates=args.max_updates)
                 n_figures += 1
         print(f"{agent} {suft}: {len(series)} configurations -> {fig_dir}")
 
