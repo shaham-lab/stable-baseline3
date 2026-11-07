@@ -24,6 +24,10 @@ from stable_baselines3.dqn.dqn_dueling import DQNDueling
 from stable_baselines3.dqn.dqnsl_dueling import DQNSLDueling
 from stable_baselines3.dqn.ddqn_n_step_per_dueling import DDQNNStepPERDueling
 from stable_baselines3.dqn.ddqnsl_n_step_per_dueling import DDQNSLNStepPERDueling
+from stable_baselines3.dqn.dqn_der import DQNDER
+from stable_baselines3.dqn.dqnsl_der import DQNSLDER
+from stable_baselines3.dqn.dqn_ere import DQNERE
+from stable_baselines3.dqn.dqnsl_ere import DQNSLERE
 from stable_baselines3.common.callbacks import EvalCallback
 
 import time
@@ -42,6 +46,10 @@ if __name__ == "__main__":
     n_steps = 3
     # DQNCER / DQNSLCER only: number of latest transitions in every batch (None: train_freq, 1: original CER)
     cer_n_latest = None
+    # DQNDER / DQNSLDER only: fraction of each (long term) batch taken from H2 (lambda of the DER paper)
+    der_lambda = 0.1
+    # DQNERE / DQNSLERE only: also do the usual DQN updates (replay ratio 0.25) besides the ERE updates after every episode
+    ere_continuous_updates = False
     # DQN1SB / DQN1SLSB only: keeps a copy of the weights per gradient update (too much memory with a big buffer)
     track_behavior_distance = False
     timesteps = 1000000 # Atari 100K
@@ -113,6 +121,21 @@ if __name__ == "__main__":
         model = DDQNSLNStepPERDueling('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda,
                                       buffer_size=short_term_buffer_size, long_term_buffer_size=buffer_size,
                                       sampling_fraction=sampling_fraction, n_steps=n_steps)
+    elif agent_name == 'DQNDER':
+        # buffer_size: memory budget of H1 + H2
+        model = DQNDER('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=buffer_size,
+                       der_lambda=der_lambda)
+    elif agent_name == 'DQNSLDER':
+        # buffer_size: memory budget of the long term DER (H1 + H2)
+        model = DQNSLDER('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
+                         long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction, der_lambda=der_lambda)
+    elif agent_name == 'DQNERE':
+        model = DQNERE('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=buffer_size,
+                       ere_continuous_updates=ere_continuous_updates)
+    elif agent_name == 'DQNSLERE':
+        model = DQNSLERE('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
+                         long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction,
+                         ere_continuous_updates=ere_continuous_updates)
     else:
         print("ERROR - no valid agent")
 

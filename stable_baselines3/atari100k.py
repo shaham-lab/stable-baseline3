@@ -25,6 +25,10 @@ from stable_baselines3.dqn.dqn_dueling import DQNDueling
 from stable_baselines3.dqn.dqnsl_dueling import DQNSLDueling
 from stable_baselines3.dqn.ddqn_n_step_per_dueling import DDQNNStepPERDueling
 from stable_baselines3.dqn.ddqnsl_n_step_per_dueling import DDQNSLNStepPERDueling
+from stable_baselines3.dqn.dqn_der import DQNDER
+from stable_baselines3.dqn.dqnsl_der import DQNSLDER
+from stable_baselines3.dqn.dqn_ere import DQNERE
+from stable_baselines3.dqn.dqnsl_ere import DQNSLERE
 from stable_baselines3.common.callbacks import EvalCallback
 
 import time
@@ -199,6 +203,45 @@ if __name__ == "__main__":
                                       buffer_size=short_buffer_size, long_term_buffer_size=buffer_size,
                                       sampling_fraction=sampling_fraction, n_steps=n_steps,
                                       prioritize_short_term=prioritize_short_term)
+    elif agent_name == 'DQNDER':
+        # Double experience replay (Han et al., 2021) on the DQN with target network, buffer_size = H1 + H2 budget,
+        # SUFT term (both memories) with tf_lambda > 0
+        # optional fraction of each batch taken from H2 (lambda of the paper), default 0.1
+        der_lambda = float(sys.argv[8]) if len(sys.argv) > 8 else 0.1
+        print("der_lambda", der_lambda)
+        model = DQNDER('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=buffer_size,
+                       der_lambda=der_lambda)
+    elif agent_name == 'DQNSLDER':
+        # Short-long SUFT: uniform short term buffer + long term DER (budget buffer_size = 1M - short buffer),
+        # SUFT term on the short term samples
+        short_buffer_size = int(sys.argv[8])
+        print("short_buffer_size", short_buffer_size)
+        sampling_fraction = float(sys.argv[9])
+        print("sampling_fraction", sampling_fraction)
+        # optional fraction of the long term part of each batch taken from H2, default 0.1
+        der_lambda = float(sys.argv[10]) if len(sys.argv) > 10 else 0.1
+        print("der_lambda", der_lambda)
+        model = DQNSLDER('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
+                         long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction, der_lambda=der_lambda)
+    elif agent_name == 'DQNERE':
+        # Emphasizing recent experience (Wang et al., 2020) on the DQN with target network, SUFT term with tf_lambda > 0
+        # optional: also do the usual DQN updates (replay ratio 0.25) besides the ERE updates after every episode
+        ere_continuous_updates = sys.argv[8].lower() in ("true", "1") if len(sys.argv) > 8 else False
+        print("ere_continuous_updates", ere_continuous_updates)
+        model = DQNERE('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=buffer_size,
+                       ere_continuous_updates=ere_continuous_updates)
+    elif agent_name == 'DQNSLERE':
+        # Short-long SUFT, uniform short term buffer + ERE on the long term buffer (SUFT term on the short term samples)
+        short_buffer_size = int(sys.argv[8])
+        print("short_buffer_size", short_buffer_size)
+        sampling_fraction = float(sys.argv[9])
+        print("sampling_fraction", sampling_fraction)
+        # optional: also do the usual DQN updates (replay ratio 0.25) besides the ERE updates after every episode
+        ere_continuous_updates = sys.argv[10].lower() in ("true", "1") if len(sys.argv) > 10 else False
+        print("ere_continuous_updates", ere_continuous_updates)
+        model = DQNSLERE('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
+                         long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction,
+                         ere_continuous_updates=ere_continuous_updates)
 
     else:
         print("ERROR - no valid agent")

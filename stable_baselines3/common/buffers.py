@@ -2415,6 +2415,493 @@ class NStepShortLongTermPrioritizedReplayBuffer(NStepPrioritizedReplayBuffer):
         return ShortLongTermReplayBuffer.sample_short_and_long(self, batch_size, env)  # type: ignore[arg-type,return-value]
 
 
+# Double experience replay (DER): fraction of the memory budget given to H2.
+# Han et al. (2021) use N1 = 50,000 and N2 = batch size x 100 = 12,800 (batch size 128): N2 / (N1 + N2)
+DER_H2_FRACTION = 12_800 / (50_000 + 12_800)
+
+
+class DERSecondaryReplayBuffer(ReplayBuffer):
+    """
+    Second memory H2 of the double experience replay (DER, see ``DERReplayBuffer``).
+
+    It holds copies of the transitions that were sampled from H1 and used in a gradient update (FIFO: once full,
+    the oldest copies are overwritten). It is sampled with probability P(i) = p_i / sum_k p_k (stratified sampling
+    over a sum tree), with the priority rule of Han et al. (2021, eq. 3):
+
+    - a transition enters H2 with p_i = exp(|delta_i|), delta_i its TD error in the update that used it
+    - every time it is sampled from H2 again: p_i <- p_i ** w_i, w_i = delta_i^2 / sum_n delta_n^2 (<= 1)
+
+    Since p_i >= 1 and w_i <= 1, the priorities only decrease, towards 1, as a transition is reused
+    (the "diminishing weight rule" that DER uses in place of PER's importance-sampling weights).
+    Transitions are stored one per row (``n_envs = 1``), their dones already exclude the timeouts.
+
+    :param buffer_size: Max number of element in the buffer
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device: PyTorch device
+    :param is_dqn: Whether the old values are DQN Q-values (otherwise SAC critics)
+    :param max_log_priority: |delta| is clipped at this value in exp(|delta|) (float overflow guard)
+    """
+
+    def __init__(
+        self,
+        buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        is_dqn: bool = False,
+        max_log_priority: float = 50.0,
+    ):
+        super().__init__(buffer_size, observation_space, action_space, device, n_envs=1, is_dqn=is_dqn)
+        self.max_log_priority = max_log_priority
+        self.sum_tree = PrioritySumTree(self.buffer_size)
+
+    def add_transitions(
+        self,
+        obs: np.ndarray,
+        next_obs: np.ndarray,
+        actions: np.ndarray,
+        rewards: np.ndarray,
+        dones: np.ndarray,
+        old_values: Union[np.ndarray, tuple[np.ndarray, np.ndarray]],
+        td_errors: np.ndarray,
+    ) -> None:
+        """
+        Add a batch of used transitions, with priority exp(|TD error|).
+
+        :param obs: [k, *obs_shape]
+        :param next_obs: [k, *obs_shape]
+        :param actions: [k, action_dim]
+        :param rewards: [k]
+        :param dones: [k], true terminations only (timeouts removed)
+        :param old_values: DQN: [k, n_actions], SAC: ([k, 1], [k, 1])
+        :param td_errors: [k] TD errors of the update that used them
+        """
+        k = len(obs)
+        if k == 0:
+            return
+        if k > self.buffer_size:
+            # Only the last buffer_size transitions would survive
+            keep = slice(k - self.buffer_size, k)
+            obs, next_obs, actions, rewards, dones, td_errors = (
+                obs[keep], next_obs[keep], actions[keep], rewards[keep], dones[keep], td_errors[keep]
+            )
+            old_values = old_values[keep] if self.is_dqn else (old_values[0][keep], old_values[1][keep])
+            k = self.buffer_size
+        rows = (self.pos + np.arange(k)) % self.buffer_size
+        self.observations[rows, 0] = obs
+        self.next_observations[rows, 0] = next_obs
+        self.actions[rows, 0] = actions
+        self.rewards[rows, 0] = rewards
+        self.dones[rows, 0] = dones
+        self.timeouts[rows, 0] = 0.0
+        self.optimizer_steps[rows, 0] = 0
+        if self.is_dqn:
+            self.old_values[rows, 0] = old_values
+        else:
+            self.old_values1[rows, 0] = old_values[0]
+            self.old_values2[rows, 0] = old_values[1]
+        priorities = np.exp(np.minimum(np.abs(np.asarray(td_errors, dtype=np.float64)), self.max_log_priority))
+        self.sum_tree.set(rows, priorities)
+        if self.pos + k >= self.buffer_size:
+            self.full = True
+        self.pos = (self.pos + k) % self.buffer_size
+
+    def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> PrioritizedReplayBufferSamples:  # type: ignore[override]
+        """
+        Sample by priority (stratified), with the sampling probabilities and the rows (``indices``) of the samples.
+        """
+        rows = self.sum_tree.stratified_sample(batch_size)
+        sampling_probabilities = (self.sum_tree.get(rows) / self.sum_tree.root).astype(np.float32)
+        samples = self._get_samples(rows, env)  # env index is always 0 (n_envs = 1)
+        return PrioritizedReplayBufferSamples(
+            observations=samples.observations,
+            actions=samples.actions,
+            next_observations=samples.next_observations,
+            dones=samples.dones,
+            rewards=samples.rewards,
+            sampling_probabilities=self.to_torch(sampling_probabilities.reshape(-1, 1)),
+            indices=rows,
+            old_values=samples.old_values,
+            old_values1=samples.old_values1,
+            old_values2=samples.old_values2,
+        )
+
+    def update_priorities(self, rows: np.ndarray, weights: np.ndarray) -> None:
+        """
+        Reused transitions: p <- p ** w (eq. 3 of Han et al. (2021)).
+
+        :param rows: Rows of the transitions sampled from H2
+        :param weights: w = delta^2 / sum_n delta_n^2 of each of them (in [0, 1])
+        """
+        weights = np.clip(np.asarray(weights, dtype=np.float64).flatten(), 0.0, 1.0)
+        self.sum_tree.set(rows, self.sum_tree.get(rows) ** weights)
+
+    def reset(self) -> None:
+        super().reset()
+        self.sum_tree = PrioritySumTree(self.buffer_size)
+
+
+class DERReplayBuffer(ReplayBuffer):
+    """
+    Double experience replay memory (DER), Han et al. (2021), Reinforcement Learning Guided by Double Replay Memory,
+    Journal of Sensors, https://doi.org/10.1155/2021/6652042 (Algorithm 1, uniform + TD-error based sampling, Sec. 3.1).
+
+    Two memories share the memory budget ``buffer_size``:
+    - H1 (this buffer, ``buffer_size - H2 size`` transitions): every new transition, FIFO, sampled uniformly
+    - H2 (``DERSecondaryReplayBuffer``, ``round(h2_fraction * buffer_size)`` transitions): copies of the transitions
+      sampled from H1 and used in an update, sampled by priority (exp(|TD error|), decreasing with every reuse)
+    ``h2_fraction`` defaults to the proportions of the paper (N1 = 50,000, N2 = 12,800).
+
+    Every batch takes ``der_lambda`` of its samples from H2 and the rest from H1 (``der_lambda = 0``: plain uniform
+    replay, ``der_lambda = 1``: H2 only), the whole batch from H1 while H2 holds fewer than ``h2_learning_starts``
+    transitions. After the update, the agent copies the used H1 transitions into H2 (``store_used()``) and updates the
+    priorities of the H2 samples (``secondary.update_priorities()``). The old values (SUFT) move with the transitions.
+
+    :param buffer_size: Memory budget of H1 + H2
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device: PyTorch device
+    :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: Not supported
+    :param handle_timeout_termination: Handle timeout termination (due to timelimit)
+        separately and treat the task as infinite horizon task.
+        https://github.com/DLR-RM/stable-baselines3/issues/284
+    :param is_dqn: Whether the old values are DQN Q-values (otherwise SAC critics)
+    :param der_lambda: Fraction of each batch taken from H2 (lambda in the paper, 0.1 is its best on Atari)
+    :param h2_fraction: Fraction of the memory budget given to H2
+    :param h2_learning_starts: Number of transitions in H2 before it is sampled
+    :param max_log_priority: |delta| is clipped at this value in exp(|delta|) (float overflow guard)
+    """
+
+    def __init__(
+        self,
+        buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+        is_dqn: bool = False,
+        der_lambda: float = 0.1,
+        h2_fraction: float = DER_H2_FRACTION,
+        h2_learning_starts: int = 32,
+        max_log_priority: float = 50.0,
+    ):
+        assert 0.0 <= der_lambda <= 1.0, f"der_lambda must be in [0, 1], got {der_lambda}"
+        assert 0.0 < h2_fraction < 1.0, f"h2_fraction must be in (0, 1), got {h2_fraction}"
+        h2_size = max(1, round(buffer_size * h2_fraction))
+        h1_size = buffer_size - h2_size
+        assert h1_size >= n_envs, f"The memory budget {buffer_size} is too small for H1"
+        super().__init__(h1_size, observation_space, action_space, device, n_envs, optimize_memory_usage, handle_timeout_termination, is_dqn)
+        if self.optimize_memory_usage:
+            raise NotImplementedError("DERReplayBuffer doesn't support optimize_memory_usage=True")
+        self.secondary = DERSecondaryReplayBuffer(h2_size, observation_space, action_space, device, is_dqn, max_log_priority)
+        self.der_lambda = der_lambda
+        self.h2_fraction = h2_fraction
+        self.h2_learning_starts = h2_learning_starts
+
+    def reset(self) -> None:
+        super().reset()
+        self.secondary.reset()
+
+    def sample_h1(self, batch_size: int, env: Optional[VecNormalize] = None) -> PrioritizedReplayBufferSamples:
+        """
+        Uniform samples of H1 with their flat indices (``row * n_envs + env``), needed to copy them into H2.
+        ``sampling_probabilities`` is the uniform probability.
+        """
+        n_transitions = self.size() * self.n_envs
+        flat_indices = np.random.randint(0, n_transitions, size=batch_size)
+        batch_inds, env_indices = flat_indices // self.n_envs, flat_indices % self.n_envs
+        if self.is_dqn:
+            old_values = {"old_values": self.to_torch(self.old_values[batch_inds, env_indices])}
+        else:
+            old_values = {
+                "old_values1": self.to_torch(self.old_values1[batch_inds, env_indices]),
+                "old_values2": self.to_torch(self.old_values2[batch_inds, env_indices]),
+            }
+        return PrioritizedReplayBufferSamples(
+            observations=self.to_torch(self._normalize_obs(self.observations[batch_inds, env_indices, :], env)),
+            actions=self.to_torch(self.actions[batch_inds, env_indices, :]),
+            next_observations=self.to_torch(self._normalize_obs(self.next_observations[batch_inds, env_indices, :], env)),
+            # Only use dones that are not due to timeouts
+            dones=self.to_torch((self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices])).reshape(-1, 1)),
+            rewards=self.to_torch(self._normalize_reward(self.rewards[batch_inds, env_indices].reshape(-1, 1), env)),
+            sampling_probabilities=self.to_torch(np.full((batch_size, 1), 1.0 / n_transitions, dtype=np.float32)),
+            indices=flat_indices,
+            **old_values,
+        )
+
+    def sample_der(
+        self, batch_size: int, env: Optional[VecNormalize] = None
+    ) -> tuple[Optional[PrioritizedReplayBufferSamples], Optional[PrioritizedReplayBufferSamples]]:
+        """
+        Sample a DER batch: ``round(der_lambda * batch_size)`` samples from H2 (once it holds
+        ``h2_learning_starts`` transitions) and the rest uniformly from H1.
+
+        :return: (H1 samples, H2 samples), ``None`` when nothing is taken from a memory
+        """
+        h2_batch_size = round(batch_size * self.der_lambda) if self.secondary.size() >= self.h2_learning_starts else 0
+        h1_batch_size = batch_size - h2_batch_size
+        h1_samples = self.sample_h1(h1_batch_size, env) if h1_batch_size > 0 else None
+        h2_samples = self.secondary.sample(h2_batch_size, env) if h2_batch_size > 0 else None
+        return h1_samples, h2_samples
+
+    def store_used(self, flat_indices: np.ndarray, td_errors: np.ndarray) -> None:
+        """
+        Copy the H1 transitions used in an update into H2, with priority exp(|TD error|).
+
+        :param flat_indices: ``indices`` of the H1 samples
+        :param td_errors: Their TD errors in that update
+        """
+        batch_inds, env_indices = flat_indices // self.n_envs, flat_indices % self.n_envs
+        if self.is_dqn:
+            old_values = self.old_values[batch_inds, env_indices]
+        else:
+            old_values = (self.old_values1[batch_inds, env_indices], self.old_values2[batch_inds, env_indices])
+        self.secondary.add_transitions(
+            self.observations[batch_inds, env_indices],
+            self.next_observations[batch_inds, env_indices],
+            self.actions[batch_inds, env_indices],
+            self.rewards[batch_inds, env_indices],
+            self.dones[batch_inds, env_indices] * (1 - self.timeouts[batch_inds, env_indices]),
+            old_values,
+            np.asarray(td_errors).flatten(),
+        )
+
+
+class ShortUniformLongDERReplayBuffer(ShortLongTermReplayBuffer):
+    """
+    ``ShortLongTermReplayBuffer`` whose short term buffer (this buffer) is sampled uniformly and whose long term
+    buffer is a double experience replay memory (``DERReplayBuffer``, H1 + H2 within ``long_term_buffer_size``).
+
+    Every new transition is added to the short term buffer. Once it is full, every new transition pops out the oldest
+    one, which is added to the long term H1. The long term part of a batch is a DER batch (``der_lambda`` of it from H2),
+    after the update the agent copies the used long term H1 transitions into H2 and updates the H2 priorities.
+
+    :param short_term_buffer_size: Max number of element in the short term buffer
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device: PyTorch device
+    :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: Not supported
+    :param handle_timeout_termination: Handle timeout termination (due to timelimit)
+        separately and treat the task as infinite horizon task.
+        https://github.com/DLR-RM/stable-baselines3/issues/284
+    :param is_dqn: Whether the old values are DQN Q-values (otherwise SAC critics)
+    :param long_term_buffer_size: Memory budget of the long term DER (H1 + H2)
+    :param sampling_fraction: Fraction of each batch taken from the short term buffer
+    :param der_lambda: Fraction of the long term part of each batch taken from H2
+    :param h2_fraction: Fraction of the long term memory budget given to H2
+    :param h2_learning_starts: Number of transitions in H2 before it is sampled
+    :param max_log_priority: |delta| is clipped at this value in exp(|delta|) (float overflow guard)
+    """
+
+    def __init__(
+        self,
+        short_term_buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+        is_dqn: bool = False,
+        long_term_buffer_size: int = 1_000_000,
+        sampling_fraction: float = 0.5,
+        der_lambda: float = 0.1,
+        h2_fraction: float = DER_H2_FRACTION,
+        h2_learning_starts: int = 32,
+        max_log_priority: float = 50.0,
+    ):
+        # The short term part is a plain ReplayBuffer (ShortLongTermReplayBuffer.__init__ is not called
+        # as it would also allocate a uniform long term buffer)
+        ReplayBuffer.__init__(
+            self, short_term_buffer_size, observation_space, action_space, device, n_envs, optimize_memory_usage, handle_timeout_termination, is_dqn
+        )
+        if self.optimize_memory_usage:
+            raise NotImplementedError("ShortUniformLongDERReplayBuffer doesn't support optimize_memory_usage=True")
+        self.long_term_buffer = DERReplayBuffer(
+            long_term_buffer_size,
+            observation_space,
+            action_space,
+            device,
+            n_envs,
+            optimize_memory_usage,
+            handle_timeout_termination,
+            is_dqn,
+            der_lambda=der_lambda,
+            h2_fraction=h2_fraction,
+            h2_learning_starts=h2_learning_starts,
+            max_log_priority=max_log_priority,
+        )
+        self.sampling_fraction = sampling_fraction
+
+    def sample_short_and_long_der(
+        self, batch_size: int, env: Optional[VecNormalize] = None
+    ) -> tuple[
+        Optional[ReplayBufferSamples], Optional[PrioritizedReplayBufferSamples], Optional[PrioritizedReplayBufferSamples]
+    ]:
+        """
+        Sample the short term part uniformly and the long term part as a DER batch, according to ``sampling_fraction``
+        (the whole batch from the short term buffer while the long term H1 has too few transitions,
+        same rule as ``ShortLongTermReplayBuffer.sample_short_and_long()``).
+
+        :return: (short term samples, long term H1 samples, long term H2 samples), ``None`` when nothing is taken
+        """
+        short_term_batch_size = round(batch_size * self.sampling_fraction)
+        long_term_batch_size = batch_size - short_term_batch_size
+        if not (self.long_term_buffer.pos >= long_term_batch_size or self.long_term_buffer.full):
+            short_term_batch_size, long_term_batch_size = batch_size, 0
+        short_term_samples = self.sample(short_term_batch_size, env) if short_term_batch_size > 0 else None
+        long_h1, long_h2 = (
+            self.long_term_buffer.sample_der(long_term_batch_size, env) if long_term_batch_size > 0 else (None, None)
+        )
+        return short_term_samples, long_h1, long_h2
+
+
+class EREReplayBuffer(ReplayBuffer):
+    """
+    Replay buffer for Emphasizing Recent Experience (ERE): Wang, Wu, Vuong & Ross (2020), Striving for Simplicity and
+    Performance in Off-Policy DRL: Output Normalization and Non-Uniform Sampling, ICML,
+    https://proceedings.mlr.press/v119/wang20x.html (authors' code: SOP_ere.py).
+
+    A standard (FIFO) replay buffer, ``sample()`` is uniform. ``sample_recent()`` samples uniformly from the ``c_k``
+    most recent transitions, with ``c_k`` given by ``recent_window()`` for the k-th of the K updates of an ERE phase:
+
+        c_k = max(N * eta^(k * 1000 / K), c_min)      (capped to the number of stored transitions)
+
+    with N the max size of the buffer: the first update of a phase samples from the whole buffer, the next ones from
+    a range of recent data that shrinks to eta^1000 * N (or c_min). ``eta`` (eta = 1: uniform) is set by the agent.
+    The old values (SUFT) are stored and returned as in the ``ReplayBuffer``.
+
+    :param buffer_size: Max number of element in the buffer
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device: PyTorch device
+    :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: Not supported
+    :param handle_timeout_termination: Handle timeout termination (due to timelimit)
+        separately and treat the task as infinite horizon task.
+        https://github.com/DLR-RM/stable-baselines3/issues/284
+    :param is_dqn: Whether the old values are DQN Q-values (otherwise SAC critics)
+    :param c_min: Minimum number of recent transitions to sample from (5000 in the paper)
+    """
+
+    def __init__(
+        self,
+        buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+        is_dqn: bool = False,
+        c_min: int = 5000,
+    ):
+        super().__init__(buffer_size, observation_space, action_space, device, n_envs, optimize_memory_usage, handle_timeout_termination, is_dqn)
+        if self.optimize_memory_usage:
+            raise NotImplementedError("EREReplayBuffer doesn't support optimize_memory_usage=True")
+        self.c_min = c_min
+
+    def recent_window(self, k: int, n_updates: int, eta: float) -> int:
+        """
+        c_k = max(N * eta^(k * 1000 / K), c_min), capped to the number of stored transitions.
+
+        :param k: Index of the update in the ERE phase (0, ..., K - 1)
+        :param n_updates: Number of updates K of the phase
+        :param eta: Emphasis on recent data (1: uniform sampling)
+        :return: c_k
+        """
+        max_size = self.buffer_size * self.n_envs
+        c_k = max(int(max_size * eta ** (k * 1000 / max(n_updates, 1))), self.c_min)
+        return min(c_k, self.size() * self.n_envs)
+
+    def sample_recent(self, batch_size: int, c_k: int, env: Optional[VecNormalize] = None) -> ReplayBufferSamples:
+        """
+        Sample uniformly from the ``c_k`` most recent transitions
+        (the ``ceil(c_k / n_envs)`` most recent rows, every env of each row).
+        """
+        n_rows = min(max(1, -(-c_k // self.n_envs)), self.size())
+        batch_inds = (self.pos - 1 - np.random.randint(0, n_rows, size=batch_size)) % self.buffer_size
+        return self._get_samples(batch_inds, env=env)
+
+
+class ShortUniformLongEREReplayBuffer(ShortLongTermReplayBuffer):
+    """
+    ``ShortLongTermReplayBuffer`` whose long term buffer is an ``EREReplayBuffer``: the short term buffer (this buffer)
+    is always sampled uniformly, the long term part of a batch is sampled uniformly (``sample_short_and_long()``)
+    or from the ``c_k`` most recent long term transitions (``sample_short_and_long_recent()``, ERE updates).
+
+    :param short_term_buffer_size: Max number of element in the short term buffer
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device: PyTorch device
+    :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: Not supported
+    :param handle_timeout_termination: Handle timeout termination (due to timelimit)
+        separately and treat the task as infinite horizon task.
+        https://github.com/DLR-RM/stable-baselines3/issues/284
+    :param is_dqn: Whether the old values are DQN Q-values (otherwise SAC critics)
+    :param long_term_buffer_size: Max number of element in the long term buffer
+    :param sampling_fraction: Fraction of each batch taken from the short term buffer
+    :param c_min: Minimum number of recent long term transitions to sample from (5000 in the paper)
+    """
+
+    def __init__(
+        self,
+        short_term_buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+        is_dqn: bool = False,
+        long_term_buffer_size: int = 1_000_000,
+        sampling_fraction: float = 0.5,
+        c_min: int = 5000,
+    ):
+        # The short term part is a plain ReplayBuffer (ShortLongTermReplayBuffer.__init__ is not called
+        # as it would also allocate a uniform long term buffer)
+        ReplayBuffer.__init__(
+            self, short_term_buffer_size, observation_space, action_space, device, n_envs, optimize_memory_usage, handle_timeout_termination, is_dqn
+        )
+        if self.optimize_memory_usage:
+            raise NotImplementedError("ShortUniformLongEREReplayBuffer doesn't support optimize_memory_usage=True")
+        self.long_term_buffer = EREReplayBuffer(
+            long_term_buffer_size,
+            observation_space,
+            action_space,
+            device,
+            n_envs,
+            optimize_memory_usage,
+            handle_timeout_termination,
+            is_dqn,
+            c_min=c_min,
+        )
+        self.sampling_fraction = sampling_fraction
+
+    def sample_short_and_long_recent(
+        self, batch_size: int, c_k: int, env: Optional[VecNormalize] = None
+    ) -> tuple[Optional[ReplayBufferSamples], Optional[ReplayBufferSamples]]:
+        """
+        Same split as ``sample_short_and_long()`` (the whole batch from the short term buffer while the long term
+        buffer has too few samples), with the long term part sampled from its ``c_k`` most recent transitions.
+        """
+        short_term_batch_size = round(batch_size * self.sampling_fraction)
+        long_term_batch_size = batch_size - short_term_batch_size
+        if not (self.long_term_buffer.pos >= long_term_batch_size or self.long_term_buffer.full):
+            short_term_batch_size, long_term_batch_size = batch_size, 0
+        short_term_samples = self.sample(short_term_batch_size, env) if short_term_batch_size > 0 else None
+        long_term_samples = (
+            self.long_term_buffer.sample_recent(long_term_batch_size, c_k, env) if long_term_batch_size > 0 else None
+        )
+        return short_term_samples, long_term_samples
+
+
 def describe_replay_buffer(replay_buffer: ReplayBuffer) -> str:
     """
     Human readable description of a replay buffer: its kind (uniform / prioritized / n-step / combined) and its size,
@@ -2425,6 +2912,15 @@ def describe_replay_buffer(replay_buffer: ReplayBuffer) -> str:
     """
 
     def describe(buffer: ReplayBuffer) -> str:
+        if isinstance(buffer, EREReplayBuffer):
+            return f"emphasizing recent experience (ERE, c_min {buffer.c_min}), size {buffer.buffer_size * buffer.n_envs}"
+        if isinstance(buffer, DERReplayBuffer):
+            return (
+                f"double experience replay (DER), budget {buffer.buffer_size * buffer.n_envs + buffer.secondary.buffer_size}: "
+                f"H1 uniform sampling, size {buffer.buffer_size * buffer.n_envs}; "
+                f"H2 used transitions, TD-error priorities exp(|delta|) ** w, size {buffer.secondary.buffer_size}; "
+                f"{buffer.der_lambda} of each batch from H2"
+            )
         if isinstance(buffer, NStepShortLongTermPrioritizedReplayBuffer) and not buffer.prioritize_short_term:
             kind = f"uniform sampling, {buffer.n_steps}-step returns (gamma {buffer.gamma})"
         elif isinstance(buffer, NStepPrioritizedReplayBuffer):
