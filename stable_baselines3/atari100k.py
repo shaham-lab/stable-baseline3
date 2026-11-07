@@ -21,6 +21,10 @@ from stable_baselines3.dqn.dqnsl_per_long import DQNSLPERLong
 from stable_baselines3.dqn.dqnsl_per_both import DQNSLPERBoth
 from stable_baselines3.dqn.dqncer import DQNCER
 from stable_baselines3.dqn.dqnsl_cer import DQNSLCER
+from stable_baselines3.dqn.dqn_dueling import DQNDueling
+from stable_baselines3.dqn.dqnsl_dueling import DQNSLDueling
+from stable_baselines3.dqn.ddqn_n_step_per_dueling import DDQNNStepPERDueling
+from stable_baselines3.dqn.ddqnsl_n_step_per_dueling import DDQNSLNStepPERDueling
 from stable_baselines3.common.callbacks import EvalCallback
 
 import time
@@ -161,6 +165,40 @@ if __name__ == "__main__":
         print("cer_n_latest", cer_n_latest if cer_n_latest is not None else "train_freq")
         model = DQNSLCER('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
                          long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction, cer_n_latest=cer_n_latest)
+    elif agent_name == 'DQNDueling':
+        # Dueling network architecture (Wang et al., 2016) on the DQN with target network, SUFT term with tf_lambda > 0
+        model = DQNDueling('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=buffer_size)
+    elif agent_name == 'DQNSLDueling':
+        # Dueling network architecture with the short and long term buffers (SUFT term on the short term samples)
+        short_buffer_size = int(sys.argv[8])
+        print("short_buffer_size", short_buffer_size)
+        sampling_fraction = float(sys.argv[9])
+        print("sampling_fraction", sampling_fraction)
+        model = DQNSLDueling('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
+                             long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
+    elif agent_name == 'DDQNNStepPERDueling':
+        # Double DQN + n-step + PER (alpha 0.5) + dueling, on the DQN with target network, SUFT term with tf_lambda > 0
+        # optional n-step length, Rainbow default is 3
+        n_steps = int(sys.argv[8]) if len(sys.argv) > 8 else 3
+        print("n_steps", n_steps)
+        model = DDQNNStepPERDueling('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=buffer_size,
+                                    n_steps=n_steps)
+    elif agent_name == 'DDQNSLNStepPERDueling':
+        # Short-long SUFT version (SUFT term on the short term samples)
+        short_buffer_size = int(sys.argv[8])
+        print("short_buffer_size", short_buffer_size)
+        sampling_fraction = float(sys.argv[9])
+        print("sampling_fraction", sampling_fraction)
+        # optional n-step length, Rainbow default is 3
+        n_steps = int(sys.argv[10]) if len(sys.argv) > 10 else 3
+        print("n_steps", n_steps)
+        # optional, whether the short term buffer is prioritized too (default true, false: sampled uniformly)
+        prioritize_short_term = sys.argv[11].lower() in ("true", "1") if len(sys.argv) > 11 else True
+        print("prioritize_short_term", prioritize_short_term)
+        model = DDQNSLNStepPERDueling('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda,
+                                      buffer_size=short_buffer_size, long_term_buffer_size=buffer_size,
+                                      sampling_fraction=sampling_fraction, n_steps=n_steps,
+                                      prioritize_short_term=prioritize_short_term)
 
     else:
         print("ERROR - no valid agent")

@@ -2096,6 +2096,325 @@ class ShortLongTermCombinedReplayBuffer(ShortLongTermReplayBuffer, CombinedRepla
         return short_term_samples, long_term_samples
 
 
+class NStepPrioritizedReplayBuffer(PrioritizedReplayBuffer):
+    """
+    Prioritized Experience Replay (proportional variant, see ``PrioritizedReplayBuffer``) with n-step returns
+    (as the ``NStepReplayBuffer``), as in Rainbow (Hessel et al., 2018, https://arxiv.org/abs/1710.02298).
+
+    The transitions are sampled with probability P(i) = p_i^priority_exponent / sum_k p_k^priority_exponent
+    (stratified sampling over the sum tree, the new transitions get the max recorded priority), and the n-step return
+    of every sampled transition (env and row given by the sum tree) is computed at sampling time, without extra memory:
+        R_t^(n) = sum_{k=0}^{n-1} gamma^k r_{t+k+1}, cut at the first termination / truncation
+    The samples hold R_t^(n) as reward, s_{t+k} as next observation, the termination at t+k and
+    the bootstrap discount gamma^k (``discounts``). The priority of a sample is the one of its first transition t.
+    The newest transition is treated as truncated, so that the n-step returns never cross into the oldest data.
+    The old values (SUFT) are the ones of s_t.
+
+    :param buffer_size: Max number of element in the buffer
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device: PyTorch device
+    :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: Not supported
+    :param handle_timeout_termination: Handle timeout termination (due to timelimit)
+        separately and treat the task as infinite horizon task.
+        https://github.com/DLR-RM/stable-baselines3/issues/284
+    :param is_dqn: Whether the old values are DQN Q-values (otherwise SAC critics)
+    :param priority_exponent: Exponent applied to the priorities given to ``update_priorities()``
+    :param n_steps: Number of steps to accumulate rewards for n-step returns
+    :param gamma: Discount factor for future rewards
+    """
+
+    def __init__(
+        self,
+        buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+        is_dqn: bool = False,
+        priority_exponent: float = 1.0,
+        n_steps: int = 3,
+        gamma: float = 0.99,
+    ):
+        super().__init__(
+            buffer_size,
+            observation_space,
+            action_space,
+            device,
+            n_envs,
+            optimize_memory_usage,
+            handle_timeout_termination,
+            is_dqn,
+            priority_exponent=priority_exponent,
+        )
+        assert n_steps >= 1, f"n_steps must be >= 1, got {n_steps}"
+        self.n_steps = n_steps
+        self.gamma = gamma
+
+    def _n_step_transitions(
+        self, batch_inds: np.ndarray, env_indices: np.ndarray, env: Optional[VecNormalize] = None
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        n-step transitions of the given (row, env) pairs, as ``NStepReplayBuffer._get_samples()``
+        (which samples the env indices itself).
+
+        :return: n-step returns, next observations (s_{t+k}), terminations at t+k, bootstrap discounts gamma^k,
+            each of shape [batch, 1] (next observations: [batch, *obs_shape])
+        """
+        # The newest row is treated as truncated (when it is not done) so that the n-step returns
+        # do not run into the row at self.pos (the oldest transition when the buffer is full)
+        last_valid_index = self.pos - 1
+        original_timeout_values = self.timeouts[last_valid_index].copy()
+        self.timeouts[last_valid_index] = np.logical_or(original_timeout_values, np.logical_not(self.dones[last_valid_index]))
+
+        # Indices of the n-step trajectories with wrap-around, shape: [batch, n_steps]
+        indices = (batch_inds[:, None] + np.arange(self.n_steps).reshape(1, -1)) % self.buffer_size
+        rewards_seq = self._normalize_reward(self.rewards[indices, env_indices[:, None]], env)
+        dones_seq = self.dones[indices, env_indices[:, None]]
+        truncated_seq = self.timeouts[indices, env_indices[:, None]]
+
+        # Stop at the first done/truncation (inclusive), otherwise keep the full sequence
+        done_or_truncated = np.logical_or(dones_seq, truncated_seq)
+        done_idx = np.where(done_or_truncated.any(axis=1), done_or_truncated.argmax(axis=1), self.n_steps - 1)
+        mask = np.arange(self.n_steps).reshape(1, -1) <= done_idx[:, None]  # [batch, n_steps]
+
+        discounts = self.gamma ** np.arange(self.n_steps, dtype=np.float32).reshape(1, -1)  # [1, n_steps]
+        n_step_returns = (rewards_seq * discounts * mask).sum(axis=1, keepdims=True).astype(np.float32)
+        # Bootstrap discount: gamma ** k, k = number of rewards in the n-step return
+        target_q_discounts = (self.gamma ** mask.sum(axis=1, keepdims=True)).astype(np.float32)
+
+        # next_obs/done at the final point of the n-step trajectory (only true terminations stop the bootstrap)
+        last_indices = (batch_inds + done_idx) % self.buffer_size
+        next_obs = self._normalize_obs(self.next_observations[last_indices, env_indices], env)
+        next_dones = self.dones[last_indices, env_indices][:, None].astype(np.float32)
+        next_timeouts = self.timeouts[last_indices, env_indices][:, None].astype(np.float32)
+        final_dones = next_dones * (1.0 - next_timeouts)
+
+        # Revert the temporary truncation
+        self.timeouts[last_valid_index] = original_timeout_values
+        return n_step_returns, next_obs, final_dones, target_q_discounts
+
+    def _get_prioritized_samples(
+        self, flat_indices: np.ndarray, sampling_probabilities: np.ndarray, env: Optional[VecNormalize] = None
+    ) -> PrioritizedReplayBufferSamples:
+        batch_inds, env_indices = flat_indices // self.n_envs, flat_indices % self.n_envs
+        n_step_returns, next_obs, final_dones, target_q_discounts = self._n_step_transitions(batch_inds, env_indices, env)
+
+        # SUFT: old values of the first transition of the n-step trajectory (the one being updated)
+        if self.is_dqn:
+            # DQN
+            old_values = {
+                "old_values": self.to_torch(self.old_values[batch_inds, env_indices]),
+            }
+        else:
+            # SAC
+            old_values = {
+                "old_values1": self.to_torch(self.old_values1[batch_inds, env_indices]),
+                "old_values2": self.to_torch(self.old_values2[batch_inds, env_indices]),
+            }
+        return PrioritizedReplayBufferSamples(
+            observations=self.to_torch(self._normalize_obs(self.observations[batch_inds, env_indices, :], env)),
+            actions=self.to_torch(self.actions[batch_inds, env_indices, :]),
+            next_observations=self.to_torch(next_obs),  # type: ignore[arg-type]
+            dones=self.to_torch(final_dones),
+            rewards=self.to_torch(n_step_returns),
+            sampling_probabilities=self.to_torch(sampling_probabilities.reshape(-1, 1)),
+            indices=flat_indices,
+            discounts=self.to_torch(target_q_discounts),
+            **old_values,
+        )
+
+
+class NStepLongTermPrioritizedReplayBuffer(PrioritizedReplayBuffer):
+    """
+    Long term part of the ``NStepShortLongTermPrioritizedReplayBuffer``: a ``PrioritizedReplayBuffer`` of
+    n-step transitions (as the ``NStepLongTermReplayBuffer``). The n-step transitions are computed by the short term
+    buffer when a transition leaves it; each stored row holds (s_t, a_t, R_t^(n), s_{t+k}, done_{t+k}, old values of s_t)
+    and the bootstrap discount gamma^k.
+
+    :param buffer_size: Max number of element in the buffer
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device: PyTorch device
+    :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: Not supported
+    :param handle_timeout_termination: Not used, the dones are already masked by the short term buffer
+    :param is_dqn: Whether the old values are DQN Q-values (otherwise SAC critics)
+    :param priority_exponent: Exponent applied to the priorities given to ``update_priorities()``
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Bootstrap discount of each n-step transition: gamma ** k
+        self.discounts = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+
+    def add(  # type: ignore[override]
+        self,
+        obs: np.ndarray,
+        next_obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        done: np.ndarray,
+        old_values_to_store,
+        infos: list[dict[str, Any]],
+        discount: np.ndarray,
+    ) -> None:
+        """
+        :param reward: n-step return R_t^(n)
+        :param done: true termination at the end of the n-step trajectory (timeouts already removed)
+        :param discount: bootstrap discount gamma ** k
+        """
+        self.discounts[self.pos] = np.array(discount)
+        super().add(obs, next_obs, action, reward, done, old_values_to_store, infos)
+
+    def _get_prioritized_samples(
+        self, flat_indices: np.ndarray, sampling_probabilities: np.ndarray, env: Optional[VecNormalize] = None
+    ) -> PrioritizedReplayBufferSamples:
+        # Note: with VecNormalize, the reward normalization is applied to the n-step return
+        samples = super()._get_prioritized_samples(flat_indices, sampling_probabilities, env)
+        batch_inds, env_indices = flat_indices // self.n_envs, flat_indices % self.n_envs
+        return samples._replace(discounts=self.to_torch(self.discounts[batch_inds, env_indices].reshape(-1, 1)))
+
+
+class NStepShortLongTermPrioritizedReplayBuffer(NStepPrioritizedReplayBuffer):
+    """
+    Short term and long term replay buffers with n-step returns and Prioritized Experience Replay
+    (n-step + PER version of the ``ShortLongTermReplayBuffer``).
+
+    Every new transition is added to the short term buffer (this buffer, an ``NStepPrioritizedReplayBuffer`` of size
+    ``short_term_buffer_size``, the n-step returns of its samples are computed at sampling time).
+    Once it is full, every new transition pops out the oldest one: its next ``n_steps - 1`` transitions are still in
+    the short term buffer, so its full n-step transition is computed (as in the ``NStepShortLongTermReplayBuffer``)
+    and added to the long term buffer (``NStepLongTermPrioritizedReplayBuffer``, of size ``long_term_buffer_size``).
+
+    ``prioritize_short_term=True``: both buffers are prioritized (as the ``ShortLongTermPrioritizedReplayBuffer``),
+    a transition enters the long term buffer with the priority it had in the short term buffer.
+    ``prioritize_short_term=False``: the short term buffer is sampled uniformly (as the
+    ``ShortUniformLongPrioritizedReplayBuffer``), a transition enters the long term buffer with the max recorded
+    priority of the long term buffer. Its samples have uniform sampling probabilities and their priorities must not
+    be updated.
+
+    :param short_term_buffer_size: Max number of element in the short term buffer (must be >= ``n_steps``)
+    :param observation_space: Observation space
+    :param action_space: Action space
+    :param device: PyTorch device
+    :param n_envs: Number of parallel environments
+    :param optimize_memory_usage: Not supported
+    :param handle_timeout_termination: Handle timeout termination (due to timelimit)
+        separately and treat the task as infinite horizon task.
+        https://github.com/DLR-RM/stable-baselines3/issues/284
+    :param is_dqn: Whether the old values are DQN Q-values (otherwise SAC critics)
+    :param long_term_buffer_size: Max number of element in the long term buffer
+    :param sampling_fraction: Fraction of each batch taken from the short term buffer
+        (the rest is taken from the long term buffer), see ``sample_short_and_long()``
+    :param priority_exponent: Exponent applied to the priorities of both buffers
+    :param n_steps: Number of steps to accumulate rewards for n-step returns
+    :param gamma: Discount factor for future rewards
+    :param prioritize_short_term: Whether the short term buffer is prioritized (otherwise sampled uniformly)
+    """
+
+    def __init__(
+        self,
+        short_term_buffer_size: int,
+        observation_space: spaces.Space,
+        action_space: spaces.Space,
+        device: Union[th.device, str] = "auto",
+        n_envs: int = 1,
+        optimize_memory_usage: bool = False,
+        handle_timeout_termination: bool = True,
+        is_dqn: bool = False,
+        long_term_buffer_size: int = 1_000_000,
+        sampling_fraction: float = 0.5,
+        priority_exponent: float = 1.0,
+        n_steps: int = 3,
+        gamma: float = 0.99,
+        prioritize_short_term: bool = True,
+    ):
+        super().__init__(
+            short_term_buffer_size,
+            observation_space,
+            action_space,
+            device,
+            n_envs,
+            optimize_memory_usage,
+            handle_timeout_termination,
+            is_dqn,
+            priority_exponent=priority_exponent,
+            n_steps=n_steps,
+            gamma=gamma,
+        )
+        assert self.buffer_size >= n_steps, "The short term buffer must hold at least `n_steps` transitions per env"
+        self.long_term_buffer = NStepLongTermPrioritizedReplayBuffer(
+            long_term_buffer_size,
+            observation_space,
+            action_space,
+            device,
+            n_envs,
+            optimize_memory_usage,
+            handle_timeout_termination,
+            is_dqn,
+            priority_exponent=priority_exponent,
+        )
+        self.sampling_fraction = sampling_fraction
+        self.prioritize_short_term = prioritize_short_term
+
+    def add(
+        self,
+        obs: np.ndarray,
+        next_obs: np.ndarray,
+        action: np.ndarray,
+        reward: np.ndarray,
+        done: np.ndarray,
+        old_values_to_store,
+        infos: list[dict[str, Any]],
+    ) -> None:
+        if self.full:
+            # Move the n-step transition of the oldest sample of the short term buffer to the long term buffer
+            env_indices = np.arange(self.n_envs)
+            long_term_pos = self.long_term_buffer.pos
+            self.long_term_buffer.add(*NStepShortLongTermReplayBuffer._get_oldest_n_step(self))  # type: ignore[arg-type]
+            if self.prioritize_short_term:
+                # With the priority it had in the short term buffer (stored after the exponent, same for both buffers)
+                priorities = self.sum_tree.get(self.pos * self.n_envs + env_indices)
+                self.long_term_buffer.sum_tree.set(long_term_pos * self.n_envs + env_indices, priorities)
+        # add the regular sample into the short term buffer (with the max recorded priority)
+        super().add(obs, next_obs, action, reward, done, old_values_to_store, infos)
+
+    def reset(self) -> None:
+        super().reset()
+        self.long_term_buffer.reset()
+
+    def sample(self, batch_size: int, env: Optional[VecNormalize] = None) -> PrioritizedReplayBufferSamples:  # type: ignore[override]
+        """
+        Sample the short term part of a batch: prioritized (``prioritize_short_term=True``) or uniform,
+        with its sampling probabilities and its indices.
+        """
+        if self.prioritize_short_term:
+            return super().sample(batch_size, env)
+        n_transitions = (self.buffer_size if self.full else self.pos) * self.n_envs
+        flat_indices = np.random.randint(0, n_transitions, size=batch_size)
+        sampling_probabilities = np.full(batch_size, 1.0 / n_transitions, dtype=np.float32)
+        return self._get_prioritized_samples(flat_indices, sampling_probabilities, env)
+
+    def sample_short_and_long(
+        self, batch_size: int, env: Optional[VecNormalize] = None
+    ) -> tuple[Optional[PrioritizedReplayBufferSamples], Optional[PrioritizedReplayBufferSamples]]:
+        """
+        Sample n-step transitions from the short term and the long term buffers, according to a given ratio
+        (same rule as ``ShortLongTermReplayBuffer.sample_short_and_long()``).
+
+        :param batch_size: Number of element to sample (short term + long term)
+        :param env: associated gym VecEnv
+            to normalize the observations/rewards when sampling
+        :return: (short term samples, long term samples), one of them is ``None``
+            when nothing is taken from the corresponding buffer
+        """
+        return ShortLongTermReplayBuffer.sample_short_and_long(self, batch_size, env)  # type: ignore[arg-type,return-value]
+
+
 def describe_replay_buffer(replay_buffer: ReplayBuffer) -> str:
     """
     Human readable description of a replay buffer: its kind (uniform / prioritized / n-step / combined) and its size,
@@ -2106,7 +2425,14 @@ def describe_replay_buffer(replay_buffer: ReplayBuffer) -> str:
     """
 
     def describe(buffer: ReplayBuffer) -> str:
-        if isinstance(buffer, PrioritizedReplayBuffer):
+        if isinstance(buffer, NStepShortLongTermPrioritizedReplayBuffer) and not buffer.prioritize_short_term:
+            kind = f"uniform sampling, {buffer.n_steps}-step returns (gamma {buffer.gamma})"
+        elif isinstance(buffer, NStepPrioritizedReplayBuffer):
+            kind = (f"prioritized sampling (proportional PER, priority exponent {buffer.priority_exponent}), "
+                    f"{buffer.n_steps}-step returns (gamma {buffer.gamma})")
+        elif isinstance(buffer, NStepLongTermPrioritizedReplayBuffer):
+            kind = f"prioritized sampling (proportional PER, priority exponent {buffer.priority_exponent}), n-step transitions"
+        elif isinstance(buffer, PrioritizedReplayBuffer):
             kind = f"prioritized sampling (proportional PER, priority exponent {buffer.priority_exponent})"
         elif isinstance(buffer, NStepReplayBuffer):
             kind = f"uniform sampling, {buffer.n_steps}-step returns (gamma {buffer.gamma})"

@@ -98,6 +98,8 @@ class PrioritizedReplayBufferSamples(NamedTuple):
     old_values: Optional[th.Tensor] = None  # DQN / DDQN / DQN1
     old_values1: Optional[th.Tensor] = None  # SAC
     old_values2: Optional[th.Tensor] = None  # SAC
+    # For the n-step prioritized replay buffers: bootstrap discount gamma^k of every sample (None otherwise)
+    discounts: Optional[th.Tensor] = None
 
 
 class DictReplayBufferSamples(NamedTuple):

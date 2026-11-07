@@ -20,6 +20,10 @@ from stable_baselines3.dqn.dqnsl_per_long import DQNSLPERLong
 from stable_baselines3.dqn.dqnsl_per_both import DQNSLPERBoth
 from stable_baselines3.dqn.dqncer import DQNCER
 from stable_baselines3.dqn.dqnsl_cer import DQNSLCER
+from stable_baselines3.dqn.dqn_dueling import DQNDueling
+from stable_baselines3.dqn.dqnsl_dueling import DQNSLDueling
+from stable_baselines3.dqn.ddqn_n_step_per_dueling import DDQNNStepPERDueling
+from stable_baselines3.dqn.ddqnsl_n_step_per_dueling import DDQNSLNStepPERDueling
 from stable_baselines3.common.callbacks import EvalCallback
 
 import time
@@ -97,6 +101,18 @@ if __name__ == "__main__":
     elif agent_name == 'DQNSLCER':
         model = DQNSLCER('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
                          long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction, cer_n_latest=cer_n_latest)
+    elif agent_name == 'DQNDueling':
+        model = DQNDueling('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=buffer_size)
+    elif agent_name == 'DQNSLDueling':
+        model = DQNSLDueling('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=short_term_buffer_size,
+                             long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction)
+    elif agent_name == 'DDQNNStepPERDueling':
+        model = DDQNNStepPERDueling('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda, buffer_size=buffer_size,
+                                    n_steps=n_steps)
+    elif agent_name == 'DDQNSLNStepPERDueling':
+        model = DDQNSLNStepPERDueling('CnnPolicy', env, verbose=2, device=device, tf_lambda=tf_lambda,
+                                      buffer_size=short_term_buffer_size, long_term_buffer_size=buffer_size,
+                                      sampling_fraction=sampling_fraction, n_steps=n_steps)
     else:
         print("ERROR - no valid agent")
 
