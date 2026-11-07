@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=ddpg_base
-#SBATCH --partition=cpu192G-48h
+#SBATCH --partition=shaham-L4
 #SBATCH --cpus-per-task=5
 #SBATCH --mem=35G
 

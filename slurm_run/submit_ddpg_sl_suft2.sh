@@ -23,7 +23,7 @@
 #   TRAIN_FREQS="4" ./submit_ddpg_sl_suft2.sh                  these train frequencies (default 1)
 #   PARALLEL=10 ./submit_ddpg_sl_suft2.sh                      runs per array task, all in parallel (default 5)
 #   DRY_RUN=1 ./submit_ddpg_sl_suft2.sh                        print the sbatch command and every task's runs without submitting
-#   PARTITION=L4-12h ./submit_ddpg_sl_suft2.sh                 another partition (default cpu192G-48h)
+#   PARTITION=L4-12h ./submit_ddpg_sl_suft2.sh                 another partition (default shaham-L4)
 #   MAIL_USER=fiskust@biu.ac.il ./submit_ddpg_sl_suft2.sh         another address for the end of array email
 # The task log is slurm-<job id>_<task id>.out and its first line names the task's configuration and runs
 
@@ -41,7 +41,7 @@ PARALLEL=${PARALLEL:-5}
 (( PARALLEL > N_RUNS )) && PARALLEL=$N_RUNS
 N_CHUNKS=$(( (N_RUNS + PARALLEL - 1) / PARALLEL ))
 MEM_PER_RUN_GB=7
-PARTITION=${PARTITION:-cpu192G-48h}
+PARTITION=${PARTITION:-shaham-L4}
 MAIL_USER=${MAIL_USER:-fiskust@biu.ac.il}
 
 # The MuJoCo (v5) environments

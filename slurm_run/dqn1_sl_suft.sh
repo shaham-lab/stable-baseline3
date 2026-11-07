@@ -17,6 +17,8 @@
 # <sampling_fraction> is the fraction of each minibatch taken from the short term buffer
 # As a job array pass one <runs> argument per array task: task i runs the i-th <runs> (0-based)
 #        e.g. sbatch --array=0-1 dqn1_sl_suft.sh 4000 1 0.5 Alien:1,Pong:1,Qbert:1 Alien:2,Pong:2,Qbert:2
+# In a job array <short_buffer_size> may also be a comma separated list, one size per <runs>: task i uses the i-th size
+#        e.g. sbatch --array=0-1 dqn1_sl_suft.sh 16000,8000 1 0.5 Alien:1 Alien:1
 # The #SBATCH lines above are sized for 3 runs; for another number of runs pass --cpus-per-task / --mem to sbatch
 # To submit many games at once use submit_dqn1_sl_suft_long_games.sh / submit_dqn1_sl_suft_other_games.sh
 
@@ -29,13 +31,22 @@ if [ -z "$SHORT_BUFFER_SIZE" ] || [ -z "$TF_LAMBDA" ] || [ -z "$SAMPLING_FRACTIO
 fi
 shift 3
 RUN_GROUPS=("$@")
+# <short_buffer_size> may be a comma separated list with one size per <runs> (per array task)
+IFS=',' read -ra SHORT_BUFFER_SIZES <<< "$SHORT_BUFFER_SIZE"
+if [ ${#SHORT_BUFFER_SIZES[@]} -gt 1 ] && [ ${#SHORT_BUFFER_SIZES[@]} -ne ${#RUN_GROUPS[@]} ]; then
+  echo "Got ${#SHORT_BUFFER_SIZES[@]} short buffer sizes for ${#RUN_GROUPS[@]} <runs>: give one size, or one per <runs>" >&2
+  exit 1
+fi
 
-# Job array: pick this task's runs
+# Job array: pick this task's runs (and short buffer size)
 if [ -n "$SLURM_ARRAY_TASK_ID" ]; then
   RUN_GROUP=${RUN_GROUPS[$SLURM_ARRAY_TASK_ID]}
   if [ -z "$RUN_GROUP" ]; then
     echo "Array task $SLURM_ARRAY_TASK_ID is past the last of the ${#RUN_GROUPS[@]} given <runs>" >&2
     exit 1
+  fi
+  if [ ${#SHORT_BUFFER_SIZES[@]} -gt 1 ]; then
+    SHORT_BUFFER_SIZE=${SHORT_BUFFER_SIZES[$SLURM_ARRAY_TASK_ID]}
   fi
   echo "Array task $SLURM_ARRAY_TASK_ID: $RUN_GROUP, short buffer $SHORT_BUFFER_SIZE, TF lambda $TF_LAMBDA, fraction $SAMPLING_FRACTION"
 elif [ ${#RUN_GROUPS[@]} -gt 1 ]; then
@@ -43,6 +54,10 @@ elif [ ${#RUN_GROUPS[@]} -gt 1 ]; then
   exit 1
 else
   RUN_GROUP=${RUN_GROUPS[0]}
+fi
+if ! [[ $SHORT_BUFFER_SIZE =~ ^[0-9]+$ ]]; then
+  echo "Bad short buffer size '$SHORT_BUFFER_SIZE'" >&2
+  exit 1
 fi
 
 SB3_DIR=/home/dsi/fiskustal/talfiskus/stable-baselines3-new/stable-baseline3
