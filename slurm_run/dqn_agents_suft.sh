@@ -5,25 +5,27 @@
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=55G
 
-# SUFT with a single 1M replay buffer: one run (Atari game, run number) of DQN / DDQN / DQNNStep / DQNPER on one GPU and one CPU core
-# RAM: 55G - the 1M transitions peak at ~53.7GB (observations + next observations) including the process overhead
+# SUFT with a single replay buffer: one run (Atari game, run number) of DQN / DDQN / DQNNStep / DQNPER on one GPU and one CPU core
+# RAM: 55G for a 1M buffer - the 1M transitions peak at ~53.7GB (observations + next observations) including the process overhead;
+# smaller buffers need much less (submit_dqn_agents_suft_shaham.sh passes --mem to fit the buffer size)
 # DQNNStep uses the Rainbow n-step length 3
 #
-# Usage: sbatch dqn_agents_suft.sh <agent> <tf_lambda> <Game>:<run_number>
-#        e.g. sbatch dqn_agents_suft.sh DDQN 1 Alien:1
+# Usage: sbatch dqn_agents_suft.sh <agent> <tf_lambda> <buffer_size> <Game>:<run_number>
+#        e.g. sbatch dqn_agents_suft.sh DDQN 1 1000000 Alien:1
 # <agent> is DQN, DDQN, DQNNStep or DQNPER
 # <Game> is the ALE name without prefix/suffix (Alien, KungFuMaster, ...)
 # As a job array pass one <Game>:<run_number> per array task: task i runs the i-th pair (0-based)
-#        e.g. sbatch --array=0-1 dqn_agents_suft.sh DQN 1 Alien:1 Pong:1
+#        e.g. sbatch --array=0-1 --mem=8G dqn_agents_suft.sh DQN 1 4000 Alien:1 Pong:1
 # To submit all the games at once use submit_dqn_agents_suft_shaham.sh
 
 AGENT_NAME=$1
 TF_LAMBDA=$2
-if [ -z "$AGENT_NAME" ] || [ -z "$TF_LAMBDA" ] || [ -z "$3" ]; then
-  echo "Usage: sbatch [--array=...] dqn_agents_suft.sh <agent> <tf_lambda> <Game>:<run_number> [...]" >&2
+BUFFER_SIZE=$3
+if [ -z "$AGENT_NAME" ] || [ -z "$TF_LAMBDA" ] || ! [[ $BUFFER_SIZE =~ ^[0-9]+$ ]] || [ -z "$4" ]; then
+  echo "Usage: sbatch [--array=...] dqn_agents_suft.sh <agent> <tf_lambda> <buffer_size> <Game>:<run_number> [...]" >&2
   exit 1
 fi
-shift 2
+shift 3
 PAIRS=("$@")
 
 N_STEPS=3
@@ -53,7 +55,7 @@ if [ -z "$GAME" ] || ! [[ $RUN_NUMBER =~ ^[0-9]+$ ]]; then
   echo "Bad <Game>:<run_number> '$PAIR'" >&2
   exit 1
 fi
-echo "${SLURM_ARRAY_TASK_ID:+Array task $SLURM_ARRAY_TASK_ID: }$GAME run $RUN_NUMBER, $AGENT_NAME, TF lambda $TF_LAMBDA${LOG_SUFFIX:+, n_steps $N_STEPS}"
+echo "${SLURM_ARRAY_TASK_ID:+Array task $SLURM_ARRAY_TASK_ID: }$GAME run $RUN_NUMBER, $AGENT_NAME, TF lambda $TF_LAMBDA, buffer $BUFFER_SIZE${LOG_SUFFIX:+, n_steps $N_STEPS}"
 
 SB3_DIR=/home/dsi/fiskustal/talfiskus/stable-baselines3-new/stable-baseline3
 PYTHON=~/miniconda3/envs/stable-baselines3/bin/python
@@ -62,7 +64,6 @@ DEVICE="cuda:0"
 RESULTS_DIR=$SB3_DIR/results/$AGENT_NAME
 TIMESTEPS=1000000
 GYM_ENV_NAME="ALE/${GAME}-v5"
-BUFFER_SIZE=1000000
 
 # One core for the run: stop PyTorch / NumPy from spawning extra threads
 export OMP_NUM_THREADS=1
