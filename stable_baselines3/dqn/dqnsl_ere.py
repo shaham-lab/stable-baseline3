@@ -20,9 +20,9 @@ class DQNSLERE(DQNERE):
       updates it is sampled from its c_k most recent transitions, c_k = max(N_long * eta^(k * 1000 / K), c_min)
 
     Every minibatch takes ``sampling_fraction`` of its samples from the short term buffer (all of them while the long
-    term buffer has too few transitions). The ERE phases and the optional continuous DQN updates
-    (``ere_continuous_updates``, uniform sampling in both buffers) are the ones of ``DQNERE``.
-    As in ``DQNSL``, the SUFT term is added for the short term samples only:
+    term buffer has too few transitions). The ERE phases after every episode and the continuous DQN updates every
+    ``train_freq`` steps (``ere_continuous_updates``, default, uniform sampling in both buffers, as ``DQNSL``) are the
+    ones of ``DQNERE``. In both kinds of updates, as in ``DQNSL``, the SUFT term is added for the short term samples only:
 
         loss = 1/B [ sum_short ((Q - y)^2 + tf_lambda * (Q - Q_old)^2) + sum_long (Q - y)^2 ]
 
@@ -45,7 +45,7 @@ class DQNSLERE(DQNERE):
         ere_eta0: float = 0.995,
         ere_c_min: int = 5000,
         ere_updates_per_step: float = 0.25,
-        ere_continuous_updates: bool = False,
+        ere_continuous_updates: bool = True,
         learning_starts: int = 100,
         batch_size: int = 32,
         tau: float = 1.0,

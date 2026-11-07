@@ -196,8 +196,8 @@ if __name__ == "__main__":
         # optional n-step length, Rainbow default is 3
         n_steps = int(sys.argv[10]) if len(sys.argv) > 10 else 3
         print("n_steps", n_steps)
-        # optional, whether the short term buffer is prioritized too (default true, false: sampled uniformly)
-        prioritize_short_term = sys.argv[11].lower() in ("true", "1") if len(sys.argv) > 11 else True
+        # optional, whether the short term buffer is prioritized too (default false: sampled uniformly)
+        prioritize_short_term = sys.argv[11].lower() in ("true", "1") if len(sys.argv) > 11 else False
         print("prioritize_short_term", prioritize_short_term)
         model = DDQNSLNStepPERDueling('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda,
                                       buffer_size=short_buffer_size, long_term_buffer_size=buffer_size,
@@ -226,7 +226,8 @@ if __name__ == "__main__":
     elif agent_name == 'DQNERE':
         # Emphasizing recent experience (Wang et al., 2020) on the DQN with target network, SUFT term with tf_lambda > 0
         # optional: also do the usual DQN updates (replay ratio 0.25) besides the ERE updates after every episode
-        ere_continuous_updates = sys.argv[8].lower() in ("true", "1") if len(sys.argv) > 8 else False
+        # (default true, false: ERE updates only)
+        ere_continuous_updates = sys.argv[8].lower() in ("true", "1") if len(sys.argv) > 8 else True
         print("ere_continuous_updates", ere_continuous_updates)
         model = DQNERE('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=buffer_size,
                        ere_continuous_updates=ere_continuous_updates)
@@ -236,8 +237,9 @@ if __name__ == "__main__":
         print("short_buffer_size", short_buffer_size)
         sampling_fraction = float(sys.argv[9])
         print("sampling_fraction", sampling_fraction)
-        # optional: also do the usual DQN updates (replay ratio 0.25) besides the ERE updates after every episode
-        ere_continuous_updates = sys.argv[10].lower() in ("true", "1") if len(sys.argv) > 10 else False
+        # optional: also do the usual DQN updates (replay ratio 0.25, SUFT term on the short term samples) besides the
+        # ERE updates after every episode (default true, false: ERE updates only)
+        ere_continuous_updates = sys.argv[10].lower() in ("true", "1") if len(sys.argv) > 10 else True
         print("ere_continuous_updates", ere_continuous_updates)
         model = DQNSLERE('CnnPolicy', env, verbose=2, device=run_device, tf_lambda=tf_lambda, buffer_size=short_buffer_size,
                          long_term_buffer_size=buffer_size, sampling_fraction=sampling_fraction,

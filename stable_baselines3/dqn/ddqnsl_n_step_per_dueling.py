@@ -20,8 +20,8 @@ class DDQNSLNStepPERDueling(DDQNNStepPERDueling):
     Every new transition is added to the short term buffer (``buffer_size``); once it is full, the n-step transition
     of its oldest sample moves to the long term buffer (``long_term_buffer_size``). Every minibatch takes
     ``sampling_fraction`` of its samples from the short term buffer (all of them while the long term buffer has
-    too few samples). The long term buffer is prioritized; the short term one is prioritized too unless
-    ``prioritize_short_term=False`` (then it is sampled uniformly, as ``DQNSLPERLong``).
+    too few samples). The long term buffer is prioritized; the short term one is sampled uniformly (default, as
+    ``DQNSLPERLong``), or prioritized too with ``prioritize_short_term=True``.
     The PER loss weights are normalized over each part of the batch, and the SUFT term is added for the short term
     samples only (as in ``DQNSLPERBoth``):
 
@@ -46,7 +46,7 @@ class DDQNSLNStepPERDueling(DDQNNStepPERDueling):
         buffer_size: int = 4000,  # short buffer 4K
         long_term_buffer_size: int = 1_000_000,  # 1e6
         sampling_fraction: float = 0.5,
-        prioritize_short_term: bool = True,
+        prioritize_short_term: bool = False,  # short term buffer sampled uniformly
         learning_starts: int = 100,
         batch_size: int = 32,
         tau: float = 1.0,

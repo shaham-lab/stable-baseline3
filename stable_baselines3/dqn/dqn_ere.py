@@ -27,11 +27,11 @@ class DQNERE(DQN):
     recent data. eta is linearly annealed from ``ere_eta0`` to 1 (uniform) over the training.
 
     Two update schedules:
+    - ``ere_continuous_updates=True`` (default): the usual DQN updates (``gradient_steps`` every ``train_freq`` steps,
+      replay ratio 0.25 by default, uniform sampling, SUFT term as in ``DQN``) plus the ERE phase after every episode
+      (the total number of updates is the sum of both)
     - ``ere_continuous_updates=False`` (paper): the agent is only updated in the ERE phases
       (``ere_updates_per_step = 0.25`` keeps the number of updates of DQN, 1 every 4 steps)
-    - ``ere_continuous_updates=True``: the usual DQN updates (``gradient_steps`` every ``train_freq`` steps, replay
-      ratio 0.25 by default, uniform sampling) plus the ERE phase after every episode (the total number of updates is
-      the sum of both)
     A phase starts at the first training call after the end of an episode (at most ``train_freq - 1`` steps later).
 
     Loss of every update (as ``DQN``):
@@ -42,7 +42,8 @@ class DQNERE(DQN):
     :param ere_eta0: Initial eta, linearly annealed to 1 over the training (0.995 in the authors' code, 1: uniform)
     :param ere_c_min: Minimum number of recent transitions to sample from (5000 in the paper)
     :param ere_updates_per_step: Updates of an ERE phase per environment step since the previous phase
-    :param ere_continuous_updates: Also do the usual DQN updates every ``train_freq`` steps
+    :param ere_continuous_updates: Also do the usual DQN updates every ``train_freq`` steps (default),
+        otherwise update only in the ERE phases (paper)
     See ``DQN`` for the other parameters.
     """
 
@@ -59,7 +60,7 @@ class DQNERE(DQN):
         ere_eta0: float = 0.995,
         ere_c_min: int = 5000,
         ere_updates_per_step: float = 0.25,
-        ere_continuous_updates: bool = False,
+        ere_continuous_updates: bool = True,
         learning_starts: int = 100,
         batch_size: int = 32,
         tau: float = 1.0,

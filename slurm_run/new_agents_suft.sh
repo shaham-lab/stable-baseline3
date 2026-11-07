@@ -11,8 +11,9 @@
 # RAM: 55G - the 1M transitions peak at ~53.7GB (observations + next observations) including the process overhead
 # (every configuration holds 1M transitions in total)
 # DDQN(SL)NStepPERDueling use the Rainbow n-step length 3 (PER alpha 0.5; the SL one prioritizes both buffers),
-# DQN(SL)DER use the DER lambda 0.1 (DER_LAMBDA), DQN(SL)ERE update only after every episode (paper);
-# ERE_CONTINUOUS=true adds the usual DQN updates (replay ratio 0.25)
+# DQN(SL)DER use the DER lambda 0.1 (DER_LAMBDA), DQN(SL)ERE do the usual DQN updates (every 4 steps, replay ratio
+# 0.25, SUFT term on the short term samples for DQNSLERE) plus the ERE updates after every episode;
+# ERE_CONTINUOUS=false: ERE updates only (paper)
 #
 # Usage: sbatch new_agents_suft.sh <agent> <tf_lambda> <short_buffer_size> <sampling_fraction> <Game>:<run_number>
 #        e.g. sbatch new_agents_suft.sh DQNDueling 0 0 0 Alien:1
@@ -36,7 +37,7 @@ PAIRS=("$@")
 
 N_STEPS=3
 DER_LAMBDA=${DER_LAMBDA:-0.1}
-ERE_CONTINUOUS=${ERE_CONTINUOUS:-false}
+ERE_CONTINUOUS=${ERE_CONTINUOUS:-true}
 # SHORT_LONG: 1 for the short-long agents; AGENT_ARGS: the agent's optional atari100k.py arguments; LOG_SUFFIX: in the log name
 case $AGENT_NAME in
   DQNDueling)            SHORT_LONG=0; AGENT_ARGS=();                      LOG_SUFFIX="" ;;

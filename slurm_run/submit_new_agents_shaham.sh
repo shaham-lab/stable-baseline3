@@ -21,7 +21,8 @@
 #   ONLY="Dueling DER" ./submit_new_agents_shaham.sh       only these agents (Dueling, Rainbow, DER, ERE)
 #   CONFIGS=sl ./submit_new_agents_shaham.sh               only these configurations (single, sl)
 #   RUNS="1 2" ./submit_new_agents_shaham.sh               only these runs
-#   ERE_CONTINUOUS=true ./submit_new_agents_shaham.sh      ERE with the usual DQN updates too (default: ERE updates only)
+#   ERE_CONTINUOUS=false ./submit_new_agents_shaham.sh     ERE updates only (paper; default: the usual DQN updates every
+#                                                          4 steps plus the ERE updates after every episode)
 #   PARTITION=shaham-L40 ./submit_new_agents_shaham.sh     another partition (default shaham-L4)
 #   MAIL_USER= ./submit_new_agents_shaham.sh               no email (default fiskust@biu.ac.il)
 #   DRY_RUN=1 ./submit_new_agents_shaham.sh                print the sbatch commands and every task's run without submitting
@@ -34,7 +35,7 @@ read -ra CONFIG_LIST <<< "${CONFIGS:-single sl}"
 PARTITION=${PARTITION:-shaham-L4}
 MAIL_USER=${MAIL_USER-fiskust@biu.ac.il}
 # Exported to the job script (sbatch passes the environment)
-export ERE_CONTINUOUS=${ERE_CONTINUOUS:-false}
+export ERE_CONTINUOUS=${ERE_CONTINUOUS:-true}
 # Single buffer configuration (the buffer size, 1M, is set by the job script)
 SINGLE_TF_LAMBDA=0
 # Short-long configuration

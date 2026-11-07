@@ -49,7 +49,7 @@ if __name__ == "__main__":
     # DQNDER / DQNSLDER only: fraction of each (long term) batch taken from H2 (lambda of the DER paper)
     der_lambda = 0.1
     # DQNERE / DQNSLERE only: also do the usual DQN updates (replay ratio 0.25) besides the ERE updates after every episode
-    ere_continuous_updates = False
+    ere_continuous_updates = True
     # DQN1SB / DQN1SLSB only: keeps a copy of the weights per gradient update (too much memory with a big buffer)
     track_behavior_distance = False
     timesteps = 1000000 # Atari 100K
